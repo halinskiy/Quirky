@@ -4,7 +4,7 @@ import Sparkle
 // MARK: - Capture Mode
 
 enum CaptureMode: String, CaseIterable {
-    case ocr, hex, dom, svg
+    case ocr, hex, dom, svg, spx
     var displayName: String { rawValue.uppercased() }
 }
 
@@ -12,7 +12,7 @@ enum CaptureMode: String, CaseIterable {
 
 private enum EnabledModesStore {
     private static let key = "enabledModes"
-    private static let canonicalOrder: [CaptureMode] = [.ocr, .hex, .dom, .svg]
+    private static let canonicalOrder: [CaptureMode] = [.ocr, .hex, .dom, .svg, .spx]
 
     static func load() -> [CaptureMode] {
         let raw = UserDefaults.standard.array(forKey: key) as? [String]
@@ -248,6 +248,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             SVGExtractor.getSVGBoundingBoxes(from: previousApp) { [weak self] boxes in
                 self?.overlay.setSVGBoxes(boxes)
             }
+        case .spx:
+            overlay.switchToSPXMode { [weak self] label in
+                self?.handleSPXSizePicked(label)
+            }
+            updateStatusLabel("SPX")
+            ToastWindow.show("SPX")
         }
     }
 
@@ -307,6 +313,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 self.overlay.setDOMElements(elements)
             }
+
+        case .spx:
+            updateStatusLabel("SPX")
+            overlay.showForSPX(screenImages: screenImagesForOverlay, onSizePicked: { [weak self] label in
+                self?.handleSPXSizePicked(label)
+            }, onCancel: { [weak self] in
+                self?.updateStatusLabel(nil)
+                self?.cancelCapture()
+            })
         }
     }
 
@@ -334,11 +349,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         smartReturnFocus()
     }
 
+    private func handleSPXSizePicked(_ label: String) {
+        isCapturing = false
+        updateStatusLabel(nil)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(label, forType: .string)
+        ToastWindow.show(label)
+        smartReturnFocus()
+    }
+
     private func handleCaptureComplete(_ cgRect: CGRect) {
         switch currentMode {
         case .svg: performSVGExtraction(on: cgRect)
         case .ocr, .hex: performPreCapturedOCR(on: cgRect)
         case .dom: break // DOM mode picks via onElementPicked, never triggers onComplete
+        case .spx: break // SPX mode picks via onSizePicked, never triggers onComplete
         }
     }
 

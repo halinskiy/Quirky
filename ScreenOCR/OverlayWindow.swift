@@ -13,10 +13,16 @@ final class SelectionView: NSView {
     var onCancel: (() -> Void)?
     var onColorPicked: ((String) -> Void)?
     var onDOMElementPicked: ((String) -> Void)?
+    var onSPXSizePicked: ((String) -> Void)?
     var isSVGMode = false
     var isHEXMode = false
     var isDOMMode = false
-    var backgroundImage: CGImage?
+    var isSPXMode = false
+    var backgroundImage: CGImage? {
+        didSet {
+            if let img = backgroundImage, isSPXMode { spxAnalyzer = SPXAnalyzer(image: img) }
+        }
+    }
 
     private var startPoint: NSPoint = .zero
     private var selectionRect: NSRect = .zero
@@ -35,6 +41,17 @@ final class SelectionView: NSView {
     // DOM mode state
     private var domPoint: NSPoint = .zero
     private var hoveredDOMElement: DOMElementBox?
+
+    // SPX mode state
+    private var spxAnalyzer: SPXAnalyzer?
+    private var spxPoint: NSPoint = .zero
+    private var spxBbox: NSRect?               // view-local
+    private var spxRulerActive = false
+    private var spxRulerStart: NSPoint = .zero // view-local
+    private var spxRulerEnd: NSPoint = .zero
+    private var spxRulerStartRaw: NSPoint = .zero  // before snap
+    private var spxLastFloodAt: NSPoint = NSPoint(x: -1000, y: -1000)
+    private var spxLastFloodTolerance: Int = -1
 
     var screenWordBoxes: [CGRect] = []
     var screenSVGBoxes: [CGRect] = []
@@ -92,14 +109,34 @@ final class SelectionView: NSView {
             needsDisplay = true
             return
         }
+        if isSPXMode {
+            spxPoint = point
+            updateSPXBbox()
+            needsDisplay = true
+            return
+        }
         guard !isSelecting else { return }
         hoveredBox = activeBoxes.first(where: { $0.contains(point) })
         needsDisplay = true
     }
 
+    override func flagsChanged(with event: NSEvent) {
+        if isSPXMode && !spxRulerActive {
+            updateSPXBbox(force: true)
+            needsDisplay = true
+        }
+        super.flagsChanged(with: event)
+    }
+
     override func mouseDown(with event: NSEvent) {
         if isHEXMode || isDOMMode { return }
         startPoint = convert(event.locationInWindow, from: nil)
+        if isSPXMode {
+            isSelecting = true
+            isDragging = false
+            spxRulerActive = false
+            return
+        }
         selectionRect = .zero
         isSelecting = true
         isDragging = false
@@ -130,6 +167,22 @@ final class SelectionView: NSView {
         if isDOMMode {
             domPoint = current
             hoveredDOMElement = pickDeepestDOMElement(at: current)
+            needsDisplay = true
+            return
+        }
+        if isSPXMode {
+            if !isDragging {
+                if hypot(current.x - startPoint.x, current.y - startPoint.y) > 3 {
+                    isDragging = true
+                    spxRulerActive = true
+                    spxRulerStartRaw = startPoint
+                    let snapStart = snapViewPoint(startPoint, radius: 8)
+                    spxRulerStart = snapStart
+                    spxBbox = nil
+                } else { return }
+            }
+            let noSnap = NSEvent.modifierFlags.contains(.command)
+            spxRulerEnd = noSnap ? current : snapViewPoint(current, radius: 8)
             needsDisplay = true
             return
         }
@@ -175,6 +228,29 @@ final class SelectionView: NSView {
             let point = convert(event.locationInWindow, from: nil)
             if let el = pickDeepestDOMElement(at: point) {
                 onDOMElementPicked?(el.label)
+            } else {
+                onCancel?()
+            }
+            return
+        }
+        if isSPXMode {
+            defer { isSelecting = false; isDragging = false; spxRulerActive = false }
+            if isDragging {
+                let s = spxRulerStart, e = spxRulerEnd
+                let dx = abs(e.x - s.x), dy = abs(e.y - s.y)
+                let label: String
+                if dy < 3 {
+                    label = "\(Int(dx.rounded())) px"
+                } else if dx < 3 {
+                    label = "\(Int(dy.rounded())) px"
+                } else {
+                    let len = Int(hypot(dx, dy).rounded())
+                    label = "\(len) px"
+                }
+                onSPXSizePicked?(label)
+            } else if let bbox = spxBbox {
+                let label = "\(Int(bbox.width.rounded()))×\(Int(bbox.height.rounded()))"
+                onSPXSizePicked?(label)
             } else {
                 onCancel?()
             }
@@ -230,6 +306,11 @@ final class SelectionView: NSView {
 
         if isDOMMode {
             drawDOMHUD(context: context)
+            return
+        }
+
+        if isSPXMode {
+            drawSPXHUD(context: context)
             return
         }
 
@@ -359,6 +440,14 @@ final class SelectionView: NSView {
         if let f = CGFont("Menlo-Regular" as CFString) { return CTFontCreateWithGraphicsFont(f, 11, nil, nil) }
         return CTFontCreateWithName("Menlo" as CFString, 11, nil)
     }()
+    private static let spxLabelFont: CTFont = {
+        if let f = CGFont("Menlo-Bold" as CFString) { return CTFontCreateWithGraphicsFont(f, 13, nil, nil) }
+        return CTFontCreateWithName("Menlo" as CFString, 13, nil)
+    }()
+    private static let spxHintFont: CTFont = {
+        if let f = CGFont("Helvetica" as CFString) { return CTFontCreateWithGraphicsFont(f, 11, nil, nil) }
+        return CTFontCreateWithName("Helvetica" as CFString, 11, nil)
+    }()
 
     private func drawDOMHUD(context: CGContext) {
         guard let el = hoveredDOMElement else { return }
@@ -417,6 +506,204 @@ final class SelectionView: NSView {
         let dimY = y + (totalHeight - dimBounds.height) / 2 - dimBounds.minY
         context.textPosition = CGPoint(x: dimX, y: dimY)
         CTLineDraw(dimLine, context)
+    }
+
+    /// Switches the view into SPX mode and constructs the analyzer from the current backgroundImage.
+    func enableSPXMode(_ onSizePicked: @escaping (String) -> Void) {
+        isSPXMode = true
+        isSVGMode = false
+        isHEXMode = false
+        isDOMMode = false
+        onSPXSizePicked = onSizePicked
+        if let img = backgroundImage {
+            spxAnalyzer = SPXAnalyzer(image: img)
+        }
+        spxBbox = nil
+        spxRulerActive = false
+        spxLastFloodAt = NSPoint(x: -1000, y: -1000)
+        spxLastFloodTolerance = -1
+        needsDisplay = true
+    }
+
+    func disableSPXMode() {
+        isSPXMode = false
+        spxAnalyzer = nil
+        spxBbox = nil
+        spxRulerActive = false
+        onSPXSizePicked = nil
+    }
+
+    // MARK: SPX helpers
+
+    private var spxBaseTolerance: Int {
+        let stored = UserDefaults.standard.integer(forKey: "spxTolerance")
+        return stored > 0 ? stored : 10
+    }
+
+    private func viewToImagePixel(_ p: NSPoint) -> (Int, Int)? {
+        guard let image = backgroundImage else { return nil }
+        let sx = CGFloat(image.width) / bounds.width
+        let sy = CGFloat(image.height) / bounds.height
+        let px = Int(p.x * sx)
+        let py = Int((bounds.height - p.y) * sy)
+        guard px >= 0, py >= 0, px < image.width, py < image.height else { return nil }
+        return (px, py)
+    }
+
+    private func imageRectToView(_ r: CGRect) -> NSRect {
+        guard let image = backgroundImage else { return .zero }
+        let sx = bounds.width / CGFloat(image.width)
+        let sy = bounds.height / CGFloat(image.height)
+        let x = r.minX * sx
+        let w = r.width * sx
+        let h = r.height * sy
+        let y = bounds.height - (r.minY + r.height) * sy
+        return NSRect(x: x, y: y, width: w, height: h)
+    }
+
+    private func imagePixelToView(_ px: Int, _ py: Int) -> NSPoint {
+        guard let image = backgroundImage else { return .zero }
+        let sx = bounds.width / CGFloat(image.width)
+        let sy = bounds.height / CGFloat(image.height)
+        return NSPoint(x: CGFloat(px) * sx, y: bounds.height - CGFloat(py) * sy)
+    }
+
+    private func snapViewPoint(_ p: NSPoint, radius: Int) -> NSPoint {
+        guard let analyzer = spxAnalyzer, let (px, py) = viewToImagePixel(p) else { return p }
+        let (snapX, snapY) = analyzer.snapToEdge(near: px, py, radius: radius)
+        return imagePixelToView(snapX, snapY)
+    }
+
+    private func updateSPXBbox(force: Bool = false) {
+        guard let analyzer = spxAnalyzer, let (px, py) = viewToImagePixel(spxPoint) else {
+            spxBbox = nil; return
+        }
+        let outerMode = NSEvent.modifierFlags.contains(.shift)
+        let tolerance = outerMode ? spxBaseTolerance * 2 : spxBaseTolerance
+        if !force, spxLastFloodTolerance == tolerance,
+           abs(spxPoint.x - spxLastFloodAt.x) < 1, abs(spxPoint.y - spxLastFloodAt.y) < 1 {
+            return
+        }
+        spxLastFloodAt = spxPoint
+        spxLastFloodTolerance = tolerance
+        if let bbox = analyzer.floodBox(at: px, py, tolerance: tolerance) {
+            spxBbox = imageRectToView(bbox)
+        } else {
+            spxBbox = nil
+        }
+    }
+
+    private func drawSPXHUD(context: CGContext) {
+        let hex = UserDefaults.standard.string(forKey: "highlightColorHex") ?? "FFD60A"
+        let highlightColor = NSColor(hex: hex)
+        let white = NSColor(deviceRed: 1, green: 1, blue: 1, alpha: 1).cgColor
+        let dimColor = NSColor(deviceRed: 1, green: 1, blue: 1, alpha: 0.65).cgColor
+
+        if spxRulerActive {
+            drawSPXRuler(context: context, highlightColor: highlightColor, textColor: white, hintColor: dimColor)
+        } else if let bbox = spxBbox {
+            drawSPXBbox(context: context, rect: bbox, highlightColor: highlightColor, textColor: white)
+        }
+    }
+
+    private func drawSPXBbox(context: CGContext, rect: NSRect, highlightColor: NSColor, textColor: CGColor) {
+        let dashPattern: [CGFloat] = [4.0, 4.0]
+        let cornerRadius: CGFloat = 4
+        highlightColor.setStroke()
+        let path = NSBezierPath(roundedRect: rect, xRadius: cornerRadius, yRadius: cornerRadius)
+        path.setLineDash(dashPattern, count: 2, phase: dashPhase)
+        path.lineWidth = 2.5
+        path.stroke()
+        highlightColor.withAlphaComponent(0.15).setFill()
+        NSBezierPath(roundedRect: rect, xRadius: cornerRadius, yRadius: cornerRadius).fill()
+
+        let label = "\(Int(rect.width.rounded()))×\(Int(rect.height.rounded()))"
+        let line = SelectionView.makeCTLine(label, font: SelectionView.spxLabelFont, color: textColor)
+        let lb = CTLineGetBoundsWithOptions(line, [])
+        let hPad: CGFloat = 8, vPad: CGFloat = 5
+        let labelW = lb.width + hPad * 2
+        let labelH = lb.height + vPad * 2
+
+        // Centered horizontally on bbox, prefer above; fall back below; clamp to bounds.
+        var x = rect.midX - labelW / 2
+        var y = rect.maxY + 6
+        if y + labelH > bounds.height - 8 { y = rect.minY - labelH - 6 }
+        if y < 8 { y = rect.midY - labelH / 2 } // overlay on top if no room
+        x = max(8, min(bounds.width - labelW - 8, x))
+
+        let bgRect = CGRect(x: x, y: y, width: labelW, height: labelH)
+        context.saveGState()
+        context.addPath(CGPath(roundedRect: bgRect, cornerWidth: 4, cornerHeight: 4, transform: nil))
+        context.setFillColor(NSColor(deviceRed: 0, green: 0, blue: 0, alpha: 0.82).cgColor)
+        context.fillPath()
+        context.restoreGState()
+
+        context.textPosition = CGPoint(x: x + hPad - lb.minX, y: y + vPad - lb.minY)
+        CTLineDraw(line, context)
+    }
+
+    private func drawSPXRuler(context: CGContext, highlightColor: NSColor, textColor: CGColor, hintColor: CGColor) {
+        let s = spxRulerStart, e = spxRulerEnd
+        let dx = e.x - s.x, dy = e.y - s.y
+        let len = hypot(dx, dy)
+        guard len > 0.5 else { return }
+
+        // Line
+        highlightColor.setStroke()
+        let path = NSBezierPath()
+        path.move(to: s)
+        path.line(to: e)
+        path.lineWidth = 2
+        path.stroke()
+
+        // Endpoint markers (small crosshair circles)
+        for p in [s, e] {
+            let dot = NSRect(x: p.x - 4, y: p.y - 4, width: 8, height: 8)
+            highlightColor.setFill()
+            NSBezierPath(ovalIn: dot).fill()
+            NSColor(deviceRed: 0, green: 0, blue: 0, alpha: 0.6).setStroke()
+            let outline = NSBezierPath(ovalIn: dot)
+            outline.lineWidth = 1
+            outline.stroke()
+        }
+
+        // Distance label
+        let label: String
+        if abs(dy) < 3 { label = "\(Int(abs(dx).rounded())) px" }
+        else if abs(dx) < 3 { label = "\(Int(abs(dy).rounded())) px" }
+        else { label = "\(Int(len.rounded())) px" }
+
+        let line = SelectionView.makeCTLine(label, font: SelectionView.spxLabelFont, color: textColor)
+        let lb = CTLineGetBoundsWithOptions(line, [])
+        let hPad: CGFloat = 8, vPad: CGFloat = 5
+        let labelW = lb.width + hPad * 2
+        let labelH = lb.height + vPad * 2
+
+        // Position label perpendicular to the line, near its midpoint, on the side with more room.
+        let midX = (s.x + e.x) / 2
+        let midY = (s.y + e.y) / 2
+        let normal: NSPoint = len > 0
+            ? NSPoint(x: -dy / len, y: dx / len)
+            : NSPoint(x: 0, y: 1)
+        let offset: CGFloat = 18
+        var lx = midX + normal.x * offset - labelW / 2
+        var ly = midY + normal.y * offset - labelH / 2
+        if lx < 8 || lx + labelW > bounds.width - 8 || ly < 8 || ly + labelH > bounds.height - 8 {
+            lx = midX - normal.x * offset - labelW / 2
+            ly = midY - normal.y * offset - labelH / 2
+        }
+        lx = max(8, min(bounds.width - labelW - 8, lx))
+        ly = max(8, min(bounds.height - labelH - 8, ly))
+
+        let bgRect = CGRect(x: lx, y: ly, width: labelW, height: labelH)
+        context.saveGState()
+        context.addPath(CGPath(roundedRect: bgRect, cornerWidth: 4, cornerHeight: 4, transform: nil))
+        context.setFillColor(NSColor(deviceRed: 0, green: 0, blue: 0, alpha: 0.82).cgColor)
+        context.fillPath()
+        context.restoreGState()
+
+        context.textPosition = CGPoint(x: lx + hPad - lb.minX, y: ly + vPad - lb.minY)
+        CTLineDraw(line, context)
     }
 
     private static func makeCTLine(_ string: String, font: CTFont, color: CGColor) -> CTLine {
@@ -581,6 +868,16 @@ final class OverlayWindow {
         }
     }
 
+    func showForSPX(screenImages: [(displayID: CGDirectDisplayID, image: CGImage)], onSizePicked: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
+        showOverlay(isSVG: false, screenImages: screenImages, onComplete: { _ in }, onCancel: onCancel, immediate: true)
+        let handler = wrappedSPXSizePicked(onSizePicked)
+        for window in windows {
+            if let view = window.contentView as? SelectionView {
+                view.enableSPXMode(handler)
+            }
+        }
+    }
+
     // MARK: Mode switching (mid-capture)
 
     func switchToOCRMode() {
@@ -589,6 +886,7 @@ final class OverlayWindow {
             view.isSVGMode = false
             view.isHEXMode = false
             view.isDOMMode = false
+            view.disableSPXMode()
             view.onColorPicked = nil
             view.onDOMElementPicked = nil
             view.needsDisplay = true
@@ -601,6 +899,7 @@ final class OverlayWindow {
             view.isSVGMode = true
             view.isHEXMode = false
             view.isDOMMode = false
+            view.disableSPXMode()
             view.onColorPicked = nil
             view.onDOMElementPicked = nil
             view.needsDisplay = true
@@ -614,6 +913,7 @@ final class OverlayWindow {
             view.isSVGMode = false
             view.isHEXMode = true
             view.isDOMMode = false
+            view.disableSPXMode()
             view.onColorPicked = handler
             view.onDOMElementPicked = nil
             view.needsDisplay = true
@@ -627,9 +927,23 @@ final class OverlayWindow {
             view.isSVGMode = false
             view.isHEXMode = false
             view.isDOMMode = true
+            view.disableSPXMode()
             view.onColorPicked = nil
             view.onDOMElementPicked = handler
             view.needsDisplay = true
+        }
+    }
+
+    func switchToSPXMode(onSizePicked: @escaping (String) -> Void) {
+        let handler = wrappedSPXSizePicked(onSizePicked)
+        for window in windows {
+            guard let view = window.contentView as? SelectionView else { continue }
+            view.isSVGMode = false
+            view.isHEXMode = false
+            view.isDOMMode = false
+            view.onColorPicked = nil
+            view.onDOMElementPicked = nil
+            view.enableSPXMode(handler)
         }
     }
 
@@ -644,6 +958,13 @@ final class OverlayWindow {
         return { [weak self] label in
             self?.dismiss()
             onElementPicked(label)
+        }
+    }
+
+    private func wrappedSPXSizePicked(_ onSizePicked: @escaping (String) -> Void) -> (String) -> Void {
+        return { [weak self] label in
+            self?.dismiss()
+            onSizePicked(label)
         }
     }
 
