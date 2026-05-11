@@ -204,39 +204,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func cycleMode() {
-        let enabled = EnabledModesStore.load()
-        guard !enabled.isEmpty else { return }
-        let idx = enabled.firstIndex(of: currentMode) ?? -1
-        let next = enabled[(idx + 1) % enabled.count]
+        guard let next = nextEnabledMode(after: currentMode) else { return }
         switchActiveCaptureMode(to: next)
     }
 
-    private func switchActiveCaptureMode(to mode: CaptureMode) {
+    /// Returns the next enabled mode in the canonical cycle, or `nil` if `current`
+    /// is the only enabled mode.
+    private func nextEnabledMode(after current: CaptureMode) -> CaptureMode? {
+        let enabled = EnabledModesStore.load()
+        guard enabled.count > 1 else { return nil }
+        let idx = enabled.firstIndex(of: current) ?? -1
+        return enabled[(idx + 1) % enabled.count]
+    }
+
+    private func switchActiveCaptureMode(to mode: CaptureMode, silent: Bool = false) {
         currentMode = mode
         switch mode {
         case .ocr:
             overlay.switchToOCRMode()
             overlay.preScanWordBoxes(level: .fast, screenImages: screenImagesForOverlay)
             updateStatusLabel(nil)
-            ToastWindow.show("OCR")
+            if !silent { ToastWindow.show("OCR") }
         case .hex:
             overlay.switchToHEXMode { [weak self] hex in
                 self?.handleColorPicked(hex)
             }
             updateStatusLabel("HEX")
-            ToastWindow.show("HEX")
+            if !silent { ToastWindow.show("HEX") }
         case .dom:
             overlay.switchToDOMMode { [weak self] label in
                 self?.handleDOMElementPicked(label)
             }
             updateStatusLabel("DOM")
-            ToastWindow.show("DOM")
+            if !silent { ToastWindow.show("DOM") }
             DOMExtractor.getDOMElements(from: previousApp) { [weak self] elements in
                 guard let self else { return }
                 if elements.isEmpty {
                     ToastWindow.show("Open in Safari/Chrome", style: .error)
-                    self.cancelCapture()
-                    self.overlay.dismiss()
+                    if let next = self.nextEnabledMode(after: .dom) {
+                        self.switchActiveCaptureMode(to: next, silent: true)
+                    } else {
+                        self.cancelCapture()
+                        self.overlay.dismiss()
+                    }
                     return
                 }
                 self.overlay.setDOMElements(elements)
@@ -244,7 +254,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .svg:
             overlay.switchToSVGMode()
             updateStatusLabel("SVG")
-            ToastWindow.show("SVG")
+            if !silent { ToastWindow.show("SVG") }
             SVGExtractor.getSVGBoundingBoxes(from: previousApp) { [weak self] boxes in
                 self?.overlay.setSVGBoxes(boxes)
             }
@@ -253,7 +263,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.handleSPXSizePicked(label)
             }
             updateStatusLabel("SPX")
-            ToastWindow.show("SPX")
+            if !silent { ToastWindow.show("SPX") }
         }
     }
 
@@ -307,8 +317,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self else { return }
                 if elements.isEmpty {
                     ToastWindow.show("Open in Safari/Chrome", style: .error)
-                    self.cancelCapture()
-                    self.overlay.dismiss()
+                    if let next = self.nextEnabledMode(after: .dom) {
+                        self.switchActiveCaptureMode(to: next, silent: true)
+                    } else {
+                        self.cancelCapture()
+                        self.overlay.dismiss()
+                    }
                     return
                 }
                 self.overlay.setDOMElements(elements)

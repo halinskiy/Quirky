@@ -42,13 +42,13 @@ final class SelectionView: NSView {
     private var domPoint: NSPoint = .zero
     private var hoveredDOMElement: DOMElementBox?
 
-    // SPX mode state
+    // SPX mode state — free ruler with edge snap on release; click without drag
+    // triggers auto-detection of the element bbox under the cursor.
     private var spxAnalyzer: SPXAnalyzer?
-    private var spxPoint: NSPoint = .zero
-    private var spxBbox: NSRect?               // element under cursor (view-local)
-    private var spxAnchor: NSRect?             // first locked element
-    private var spxLastFloodAt: NSPoint = NSPoint(x: -1000, y: -1000)
-    private var spxLastFloodTolerance: Int = -1
+    private var spxCursor: NSPoint = .zero
+    private var spxRulerStart: NSPoint = .zero
+    private var spxRulerEnd: NSPoint = .zero
+    private var spxRulerActive: Bool = false
 
     var screenWordBoxes: [CGRect] = []
     var screenSVGBoxes: [CGRect] = []
@@ -107,8 +107,7 @@ final class SelectionView: NSView {
             return
         }
         if isSPXMode {
-            spxPoint = point
-            updateSPXBbox()
+            spxCursor = point
             needsDisplay = true
             return
         }
@@ -118,16 +117,20 @@ final class SelectionView: NSView {
     }
 
     override func flagsChanged(with event: NSEvent) {
-        if isSPXMode {
-            updateSPXBbox(force: true)
-            needsDisplay = true
-        }
         super.flagsChanged(with: event)
     }
 
     override func mouseDown(with event: NSEvent) {
-        if isHEXMode || isDOMMode || isSPXMode { return }
-        startPoint = convert(event.locationInWindow, from: nil)
+        if isHEXMode || isDOMMode { return }
+        let point = convert(event.locationInWindow, from: nil)
+        startPoint = point
+        if isSPXMode {
+            spxRulerStart = point
+            spxRulerEnd = point
+            spxRulerActive = false
+            spxCursor = point
+            return
+        }
         selectionRect = .zero
         isSelecting = true
         isDragging = false
@@ -162,9 +165,13 @@ final class SelectionView: NSView {
             return
         }
         if isSPXMode {
-            // Drag is not used in SPX; treat as a stray move and keep bbox live.
-            spxPoint = current
-            updateSPXBbox()
+            spxCursor = current
+            if !spxRulerActive {
+                if hypot(current.x - startPoint.x, current.y - startPoint.y) > 3 {
+                    spxRulerActive = true
+                }
+            }
+            spxRulerEnd = current
             needsDisplay = true
             return
         }
@@ -216,26 +223,26 @@ final class SelectionView: NSView {
             return
         }
         if isSPXMode {
-            let point = convert(event.locationInWindow, from: nil)
-            spxPoint = point
-            updateSPXBbox(force: true)
-            guard let bbox = spxBbox else { onCancel?(); return }
-
-            // Shift+click → instantly copy single-element W×H (Measure objects)
-            if NSEvent.modifierFlags.contains(.shift) && spxAnchor == nil {
-                let label = "\(Int(bbox.width.rounded()))×\(Int(bbox.height.rounded()))"
-                onSPXSizePicked?(label)
-                return
-            }
-
-            if let anchor = spxAnchor {
-                // Second click — measure distance, copy & dismiss.
-                let label = SelectionView.formatSPXGap(from: anchor, to: bbox)
+            if spxRulerActive {
+                // Drag → ruler. Snap each endpoint to the nearest detected edge.
+                let s = snapViewPoint(spxRulerStart, radius: 14)
+                let e = snapViewPoint(spxRulerEnd, radius: 14)
+                let dx = abs(e.x - s.x), dy = abs(e.y - s.y)
+                let label: String
+                if dy < 3 { label = "\(Int(dx.rounded())) px" }
+                else if dx < 3 { label = "\(Int(dy.rounded())) px" }
+                else { label = "\(Int(hypot(dx, dy).rounded())) px" }
                 onSPXSizePicked?(label)
             } else {
-                // First click — lock this element as anchor.
-                spxAnchor = bbox
-                needsDisplay = true
+                // Click without drag → auto-detect element bbox under the cursor.
+                let point = convert(event.locationInWindow, from: nil)
+                guard let (px, py) = viewToImagePixel(point),
+                      let analyzer = spxAnalyzer,
+                      let bbox = analyzer.elementBboxAt(x: px, y: py, minEdgeLength: spxMinEdgeLength)
+                else { onCancel?(); return }
+                let viewBbox = imageRectToView(bbox)
+                let label = "\(Int(viewBbox.width.rounded()))×\(Int(viewBbox.height.rounded()))"
+                onSPXSizePicked?(label)
             }
             return
         }
@@ -270,14 +277,7 @@ final class SelectionView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53 {
-            if isSPXMode, spxAnchor != nil {
-                spxAnchor = nil
-                needsDisplay = true
-                return
-            }
-            onCancel?()
-        }
+        if event.keyCode == 53 { onCancel?() }
     }
 
     // MARK: Drawing
@@ -508,18 +508,16 @@ final class SelectionView: NSView {
         if let img = backgroundImage {
             spxAnalyzer = SPXAnalyzer(image: img)
         }
-        spxBbox = nil
-        spxAnchor = nil
-        spxLastFloodAt = NSPoint(x: -1000, y: -1000)
-        spxLastFloodTolerance = -1
+        spxRulerActive = false
+        spxRulerStart = .zero
+        spxRulerEnd = .zero
         needsDisplay = true
     }
 
     func disableSPXMode() {
         isSPXMode = false
         spxAnalyzer = nil
-        spxBbox = nil
-        spxAnchor = nil
+        spxRulerActive = false
         onSPXSizePicked = nil
     }
 
@@ -564,159 +562,71 @@ final class SelectionView: NSView {
         return imagePixelToView(snapX, snapY)
     }
 
-    private func updateSPXBbox(force: Bool = false) {
-        guard let analyzer = spxAnalyzer, let (px, py) = viewToImagePixel(spxPoint) else {
-            spxBbox = nil; return
-        }
-        // Shift halves the minimum edge length — useful for measuring smaller
-        // elements when the default would jump out to a parent container.
-        let tighter = NSEvent.modifierFlags.contains(.shift)
-        let minEdge = tighter ? max(4, spxMinEdgeLength / 2) : spxMinEdgeLength
-        if !force, spxLastFloodTolerance == minEdge,
-           abs(spxPoint.x - spxLastFloodAt.x) < 1, abs(spxPoint.y - spxLastFloodAt.y) < 1 {
-            return
-        }
-        spxLastFloodAt = spxPoint
-        spxLastFloodTolerance = minEdge
-        if let bbox = analyzer.elementBboxAt(x: px, y: py, minEdgeLength: minEdge) {
-            spxBbox = imageRectToView(bbox)
-        } else {
-            spxBbox = nil
-        }
-    }
-
     private func drawSPXHUD(context: CGContext) {
         let hex = UserDefaults.standard.string(forKey: "highlightColorHex") ?? "FFD60A"
         let highlightColor = NSColor(hex: hex)
         let white = NSColor(deviceRed: 1, green: 1, blue: 1, alpha: 1).cgColor
 
-        // Anchor (locked element from the first click) — solid stroke, slight fill.
-        if let anchor = spxAnchor {
-            drawSPXElement(context: context, rect: anchor, color: highlightColor, animated: false, faded: true)
-        }
-        // Current bbox under the cursor — animated dashed, slightly stronger fill.
-        if let bbox = spxBbox {
-            drawSPXElement(context: context, rect: bbox, color: highlightColor, animated: true, faded: false)
-        }
-
-        // If both present, draw distance arrows + a pill with the gap in px.
-        if let anchor = spxAnchor, let bbox = spxBbox, !anchor.equalTo(bbox) {
-            let (hgap, vgap, hDir, vDir) = SelectionView.gapBetween(anchor, bbox)
-            // Horizontal dimension line (only if there is a horizontal gap).
-            if hgap >= 1 {
-                let yOverlapLo = max(anchor.minY, bbox.minY)
-                let yOverlapHi = min(anchor.maxY, bbox.maxY)
-                let yArrow: CGFloat = yOverlapLo < yOverlapHi
-                    ? (yOverlapLo + yOverlapHi) / 2
-                    : (anchor.midY + bbox.midY) / 2
-                let xLeft = hDir > 0 ? anchor.maxX : bbox.maxX
-                let xRight = hDir > 0 ? bbox.minX : anchor.minX
-                drawDimensionArrow(
-                    context: context,
-                    from: NSPoint(x: xLeft, y: yArrow),
-                    to: NSPoint(x: xRight, y: yArrow),
-                    label: "\(Int(hgap.rounded())) px",
-                    color: highlightColor,
-                    textColor: white
-                )
-            }
-            // Vertical dimension line.
-            if vgap >= 1 {
-                let xOverlapLo = max(anchor.minX, bbox.minX)
-                let xOverlapHi = min(anchor.maxX, bbox.maxX)
-                let xArrow: CGFloat = xOverlapLo < xOverlapHi
-                    ? (xOverlapLo + xOverlapHi) / 2
-                    : (anchor.midX + bbox.midX) / 2
-                // NSView y increases upward; "below" means smaller y.
-                let yBottom = vDir > 0 ? anchor.minY : bbox.minY
-                let yTop = vDir > 0 ? bbox.maxY : anchor.maxY
-                drawDimensionArrow(
-                    context: context,
-                    from: NSPoint(x: xArrow, y: yBottom),
-                    to: NSPoint(x: xArrow, y: yTop),
-                    label: "\(Int(vgap.rounded())) px",
-                    color: highlightColor,
-                    textColor: white
-                )
-            }
-            // No gap at all — rects overlap; show a tiny hint near the cursor.
-            if hgap < 1 && vgap < 1 {
-                drawSPXPill(context: context, near: NSPoint(x: bbox.midX, y: bbox.maxY + 14),
-                            text: "overlap", textColor: white)
-            }
-        } else if spxAnchor == nil, let bbox = spxBbox {
-            // No anchor yet — show the element's own dimensions as a hint.
-            let label = "\(Int(bbox.width.rounded()))×\(Int(bbox.height.rounded()))"
-            drawSPXPill(context: context, near: NSPoint(x: bbox.midX, y: bbox.maxY + 14),
-                        text: label, textColor: white)
-        }
-    }
-
-    private func drawSPXElement(context: CGContext, rect: NSRect, color: NSColor, animated: Bool, faded: Bool) {
-        let dashPattern: [CGFloat] = [4.0, 4.0]
-        let cornerRadius: CGFloat = 4
-        color.setStroke()
-        let path = NSBezierPath(roundedRect: rect, xRadius: cornerRadius, yRadius: cornerRadius)
-        if animated {
-            path.setLineDash(dashPattern, count: 2, phase: dashPhase)
+        if spxRulerActive {
+            // Live ruler: line from drag-start to current cursor.
+            drawSPXRuler(context: context, start: spxRulerStart, end: spxRulerEnd,
+                         color: highlightColor, textColor: white)
         } else {
-            // Anchor stays still — a solid stroke reads clearly as "locked".
-            path.setLineDash([], count: 0, phase: 0)
+            // Idle / hover: thin crosshair through the cursor as a visual ruler.
+            drawSPXCrosshair(context: context, at: spxCursor)
         }
-        path.lineWidth = 2.5
-        path.stroke()
-        let fillAlpha: CGFloat = faded ? 0.08 : 0.15
-        color.withAlphaComponent(fillAlpha).setFill()
-        NSBezierPath(roundedRect: rect, xRadius: cornerRadius, yRadius: cornerRadius).fill()
     }
 
-    private func drawDimensionArrow(context: CGContext, from a: NSPoint, to b: NSPoint, label: String, color: NSColor, textColor: CGColor) {
-        let dx = b.x - a.x, dy = b.y - a.y
+    private func drawSPXCrosshair(context: CGContext, at p: NSPoint) {
+        guard p.x > 0 || p.y > 0 else { return }
+        context.saveGState()
+        context.setStrokeColor(NSColor(deviceRed: 1, green: 1, blue: 1, alpha: 0.28).cgColor)
+        context.setLineWidth(1.0)
+        // Sub-pixel offset so the hairline renders crisply on 1x and 2x.
+        let px = p.x.rounded() + 0.5
+        let py = p.y.rounded() + 0.5
+        context.move(to: NSPoint(x: 0, y: py))
+        context.addLine(to: NSPoint(x: bounds.width, y: py))
+        context.move(to: NSPoint(x: px, y: 0))
+        context.addLine(to: NSPoint(x: px, y: bounds.height))
+        context.strokePath()
+        context.restoreGState()
+    }
+
+    private func drawSPXRuler(context: CGContext, start: NSPoint, end: NSPoint, color: NSColor, textColor: CGColor) {
+        let dx = end.x - start.x, dy = end.y - start.y
         let len = hypot(dx, dy)
-        guard len > 1 else { return }
+        guard len > 0.5 else { return }
 
         // Main line.
         color.setStroke()
         let line = NSBezierPath()
-        line.move(to: a)
-        line.line(to: b)
+        line.move(to: start)
+        line.line(to: end)
         line.lineWidth = 1.5
         line.stroke()
 
-        // Arrowheads at both ends, pointing outward.
+        // Perpendicular tick marks at endpoints.
         let ux = dx / len, uy = dy / len
-        drawArrowhead(at: a, dirFromTip: (-ux, -uy), color: color)
-        drawArrowhead(at: b, dirFromTip: (ux, uy),  color: color)
-
-        // Label pill — placed to the side of the line so it doesn't sit on top of it.
         let perpX = -uy, perpY = ux
-        let mid = NSPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+        let tickLen: CGFloat = 5
+        for p in [start, end] {
+            let tick = NSBezierPath()
+            tick.move(to: NSPoint(x: p.x + perpX * tickLen, y: p.y + perpY * tickLen))
+            tick.line(to: NSPoint(x: p.x - perpX * tickLen, y: p.y - perpY * tickLen))
+            tick.lineWidth = 1.5
+            tick.stroke()
+        }
+
+        // Distance label.
+        let absDx = abs(dx), absDy = abs(dy)
+        let label: String
+        if absDy < 3 { label = "\(Int(absDx.rounded())) px" }
+        else if absDx < 3 { label = "\(Int(absDy.rounded())) px" }
+        else { label = "\(Int(len.rounded())) px" }
+        let mid = NSPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
         let pillCenter = NSPoint(x: mid.x + perpX * 14, y: mid.y + perpY * 14)
         drawSPXPill(context: context, near: pillCenter, text: label, textColor: textColor)
-    }
-
-    /// Draws a single arrow-tip at `tip` where `dirFromTip` is the unit vector pointing
-    /// outward (i.e., the direction the arrow visually "shoots toward").
-    private func drawArrowhead(at tip: NSPoint, dirFromTip: (CGFloat, CGFloat), color: NSColor) {
-        let len: CGFloat = 7
-        let halfW: CGFloat = 4
-        let (dx, dy) = dirFromTip
-        // The arrowhead "opens" on the side opposite to dirFromTip.
-        let baseX = tip.x - dx * len
-        let baseY = tip.y - dy * len
-        let perpX = -dy, perpY = dx
-        let leftX = baseX + perpX * halfW
-        let leftY = baseY + perpY * halfW
-        let rightX = baseX - perpX * halfW
-        let rightY = baseY - perpY * halfW
-
-        color.setFill()
-        let path = NSBezierPath()
-        path.move(to: tip)
-        path.line(to: NSPoint(x: leftX, y: leftY))
-        path.line(to: NSPoint(x: rightX, y: rightY))
-        path.close()
-        path.fill()
     }
 
     private func drawSPXPill(context: CGContext, near center: NSPoint, text: String, textColor: CGColor) {
@@ -739,36 +649,6 @@ final class SelectionView: NSView {
 
         context.textPosition = CGPoint(x: lx + hPad - lb.minX, y: ly + vPad - lb.minY)
         CTLineDraw(ctLine, context)
-    }
-
-    // Returns (hgap, vgap, hDir, vDir) where:
-    //   hgap = horizontal distance between facing edges (0 if rects overlap on X)
-    //   hDir = +1 if b is to the right of a, -1 if to the left, 0 if overlap
-    //   vgap, vDir — same for the Y axis (NSView convention: y grows upward)
-    private static func gapBetween(_ a: NSRect, _ b: NSRect) -> (CGFloat, CGFloat, Int, Int) {
-        let hgap: CGFloat
-        let hDir: Int
-        if b.minX >= a.maxX { hgap = b.minX - a.maxX; hDir = 1 }
-        else if b.maxX <= a.minX { hgap = a.minX - b.maxX; hDir = -1 }
-        else { hgap = 0; hDir = 0 }
-
-        let vgap: CGFloat
-        let vDir: Int
-        if b.minY >= a.maxY { vgap = b.minY - a.maxY; vDir = 1 }
-        else if b.maxY <= a.minY { vgap = a.minY - b.maxY; vDir = -1 }
-        else { vgap = 0; vDir = 0 }
-
-        return (hgap, vgap, hDir, vDir)
-    }
-
-    fileprivate static func formatSPXGap(from a: NSRect, to b: NSRect) -> String {
-        let (h, v, _, _) = gapBetween(a, b)
-        let hi = Int(h.rounded())
-        let vi = Int(v.rounded())
-        if hi == 0 && vi == 0 { return "0 px" }
-        if hi == 0 { return "\(vi) px" }
-        if vi == 0 { return "\(hi) px" }
-        return "\(hi) × \(vi) px"
     }
 
     private static func makeCTLine(_ string: String, font: CTFont, color: CGColor) -> CTLine {
