@@ -525,9 +525,9 @@ final class SelectionView: NSView {
 
     // MARK: SPX helpers
 
-    private var spxBaseTolerance: Int {
-        let stored = UserDefaults.standard.integer(forKey: "spxTolerance")
-        return stored > 0 ? stored : 10
+    private var spxMinEdgeLength: Int {
+        let stored = UserDefaults.standard.integer(forKey: "spxMinEdgeLength")
+        return stored > 0 ? stored : 16
     }
 
     private func viewToImagePixel(_ p: NSPoint) -> (Int, Int)? {
@@ -568,15 +568,17 @@ final class SelectionView: NSView {
         guard let analyzer = spxAnalyzer, let (px, py) = viewToImagePixel(spxPoint) else {
             spxBbox = nil; return
         }
-        let outerMode = NSEvent.modifierFlags.contains(.shift)
-        let tolerance = outerMode ? spxBaseTolerance * 2 : spxBaseTolerance
-        if !force, spxLastFloodTolerance == tolerance,
+        // Shift halves the minimum edge length — useful for measuring smaller
+        // elements when the default would jump out to a parent container.
+        let tighter = NSEvent.modifierFlags.contains(.shift)
+        let minEdge = tighter ? max(4, spxMinEdgeLength / 2) : spxMinEdgeLength
+        if !force, spxLastFloodTolerance == minEdge,
            abs(spxPoint.x - spxLastFloodAt.x) < 1, abs(spxPoint.y - spxLastFloodAt.y) < 1 {
             return
         }
         spxLastFloodAt = spxPoint
-        spxLastFloodTolerance = tolerance
-        if let bbox = analyzer.floodBox(at: px, py, tolerance: tolerance) {
+        spxLastFloodTolerance = minEdge
+        if let bbox = analyzer.elementBboxAt(x: px, y: py, minEdgeLength: minEdge) {
             spxBbox = imageRectToView(bbox)
         } else {
             spxBbox = nil

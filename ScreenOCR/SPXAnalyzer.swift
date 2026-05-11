@@ -1,12 +1,17 @@
 import Cocoa
 
 /// Pixel-level analyzer for SPX mode.
-/// Holds a tightly-packed RGBA copy of a CGImage plus a lazy gradient map,
-/// and offers two primitives:
-///   - `floodBox(at:tolerance:)`  — scanline 4-connected flood fill, returns bbox
-///   - `snapToEdge(near:radius:)` — spiral search for the nearest high-gradient pixel
+/// Holds a tightly-packed RGBA copy of a CGImage plus lazy edge / run-length maps.
 ///
-/// Coordinates are image pixels with origin top-left.
+/// Primitives:
+///   - `elementBboxAt(x:y:minEdgeLength:)` — raycast in 4 directions from `(x,y)`
+///     until hitting a "long" edge in each axis. Long-edge filtering ignores text
+///     strokes and short artefacts, snapping the bbox to the nearest enclosing
+///     UI element (window, panel, card, button).
+///   - `snapToEdge(near:radius:)` — spiral search for the nearest high-gradient
+///     pixel (used for free ruler endpoints, if/when added back).
+///
+/// All coordinates are image pixels, origin top-left.
 final class SPXAnalyzer {
     let width: Int
     let height: Int
@@ -14,6 +19,13 @@ final class SPXAnalyzer {
     private let pixels: UnsafeMutablePointer<UInt8>
     private let bytesPerRow: Int
     private var gradient: UnsafeMutablePointer<UInt8>?
+    // For each pixel, the length of the contiguous high-gradient run it
+    // belongs to, capped at 255. `vRunLen` measures along the vertical axis
+    // (so it identifies vertical edges); `hRunLen` along the horizontal.
+    private var vRunLen: UnsafeMutablePointer<UInt8>?
+    private var hRunLen: UnsafeMutablePointer<UInt8>?
+
+    private let edgeThreshold: UInt8 = 24
 
     init?(image: CGImage) {
         self.width = image.width
@@ -39,85 +51,72 @@ final class SPXAnalyzer {
     deinit {
         UnsafeMutableRawPointer(pixels).deallocate()
         if let g = gradient { UnsafeMutableRawPointer(g).deallocate() }
+        if let v = vRunLen { UnsafeMutableRawPointer(v).deallocate() }
+        if let h = hRunLen { UnsafeMutableRawPointer(h).deallocate() }
     }
 
-    // MARK: - Flood fill
+    // MARK: - Element bbox (raycast over long edges)
 
-    /// Scanline 4-connected flood fill at `(startX, startY)`.
-    /// Returns bbox in image pixel coords or `nil` if the region exceeds `maxPixels`
-    /// (used to avoid filling the entire desktop background by accident).
-    func floodBox(at startX: Int, _ startY: Int, tolerance: Int, maxPixels: Int = 300_000) -> CGRect? {
-        guard startX >= 0, startY >= 0, startX < width, startY < height else { return nil }
+    /// Returns the bounding rect of the smallest enclosing UI element around
+    /// `(x, y)`, or `nil` if the rays cover more than `maxArea` fraction of the
+    /// canvas (e.g., when the cursor is on a uniform desktop background).
+    ///
+    /// `minEdgeLength` is the perpendicular run length an edge must have to be
+    /// considered a "real" boundary. ~16 px filters out body text strokes while
+    /// keeping buttons / cards / windows.
+    func elementBboxAt(x: Int, y: Int, minEdgeLength: Int = 16, maxArea: Double = 0.85) -> CGRect? {
+        guard x >= 0, y >= 0, x < width, y < height else { return nil }
+        if vRunLen == nil || hRunLen == nil { buildRunMaps() }
+        guard let v = vRunLen, let h = hRunLen else { return nil }
 
-        let bpr = bytesPerRow
-        let pxPtr = pixels
+        let minLen = UInt8(min(255, max(1, minEdgeLength)))
+        let w = width
 
-        let seedR = pxPtr[startY * bpr + startX * 4]
-        let seedG = pxPtr[startY * bpr + startX * 4 + 1]
-        let seedB = pxPtr[startY * bpr + startX * 4 + 2]
-        let tol = UInt8(max(0, min(255, tolerance)))
-
-        @inline(__always) func match(_ x: Int, _ y: Int) -> Bool {
-            let i = y * bpr + x * 4
-            let r = pxPtr[i], g = pxPtr[i + 1], b = pxPtr[i + 2]
-            let dr = r > seedR ? r - seedR : seedR - r
-            let dg = g > seedG ? g - seedG : seedG - g
-            let db = b > seedB ? b - seedB : seedB - b
-            return max(dr, max(dg, db)) <= tol
-        }
-
-        var visited = [Bool](repeating: false, count: width * height)
-        var stack: [(Int, Int)] = []
-        stack.reserveCapacity(128)
-        stack.append((startX, startY))
-
-        var minX = startX, maxX = startX, minY = startY, maxY = startY
-        var filled = 0
-
-        while let (sx, y) = stack.popLast() {
-            let rowOffset = y * width
-            if visited[rowOffset + sx] { continue }
-
-            var lx = sx
-            while lx >= 0, !visited[rowOffset + lx], match(lx, y) { lx -= 1 }
-            lx += 1
-
-            var rx = sx
-            while rx < width, !visited[rowOffset + rx], match(rx, y) { rx += 1 }
-            rx -= 1
-
-            for i in lx...rx { visited[rowOffset + i] = true }
-            filled += rx - lx + 1
-            if filled > maxPixels { return nil }
-
-            if lx < minX { minX = lx }
-            if rx > maxX { maxX = rx }
-            if y < minY { minY = y }
-            if y > maxY { maxY = y }
-
-            for ny in [y - 1, y + 1] where ny >= 0 && ny < height {
-                let nyOffset = ny * width
-                var i = lx
-                while i <= rx {
-                    if !visited[nyOffset + i], match(i, ny) {
-                        var j = i
-                        while j <= rx, !visited[nyOffset + j], match(j, ny) { j += 1 }
-                        stack.append((j - 1, ny))
-                        i = j + 1
-                    } else {
-                        i += 1
-                    }
-                }
+        // Ray right: find smallest x' > x where vRunLen[(y, x')] >= minLen.
+        var right = width - 1
+        if x < width - 1 {
+            for xi in (x + 1)..<width where v[y * w + xi] >= minLen {
+                right = xi; break
             }
         }
 
-        return CGRect(x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1)
+        // Ray left.
+        var left = 0
+        if x > 0 {
+            var xi = x - 1
+            while xi >= 0 {
+                if v[y * w + xi] >= minLen { left = xi; break }
+                xi -= 1
+            }
+        }
+
+        // Ray down (image y grows downward).
+        var bottom = height - 1
+        if y < height - 1 {
+            for yi in (y + 1)..<height where h[yi * w + x] >= minLen {
+                bottom = yi; break
+            }
+        }
+
+        // Ray up.
+        var top = 0
+        if y > 0 {
+            var yi = y - 1
+            while yi >= 0 {
+                if h[yi * w + x] >= minLen { top = yi; break }
+                yi -= 1
+            }
+        }
+
+        let wOut = right - left + 1
+        let hOut = bottom - top + 1
+        guard wOut > 3, hOut > 3 else { return nil }
+        if Double(wOut * hOut) > Double(width * height) * maxArea { return nil }
+        return CGRect(x: left, y: top, width: wOut, height: hOut)
     }
 
-    // MARK: - Edge snap
+    // MARK: - Edge snap (kept for potential ruler use)
 
-    /// Snap `(x, y)` to the nearest pixel whose gradient magnitude exceeds `threshold`,
-    /// searching outward to `radius`. Returns the original point if nothing is found.
     func snapToEdge(near x: Int, _ y: Int, radius: Int, threshold: Int = 36) -> (Int, Int) {
         guard radius > 0 else { return (x, y) }
         if gradient == nil { buildGradientMap() }
@@ -146,6 +145,8 @@ final class SPXAnalyzer {
         return (x, y)
     }
 
+    // MARK: - Map builders
+
     private func buildGradientMap() {
         let count = width * height
         let raw = UnsafeMutableRawPointer.allocate(byteCount: count, alignment: 1)
@@ -166,5 +167,59 @@ final class SPXAnalyzer {
             }
         }
         gradient = map
+    }
+
+    /// Fills `vRunLen` and `hRunLen` with the length of the high-gradient run
+    /// each pixel belongs to in its respective axis. Capped at 255.
+    private func buildRunMaps() {
+        if gradient == nil { buildGradientMap() }
+        guard let grad = gradient else { return }
+
+        let count = width * height
+        let vRaw = UnsafeMutableRawPointer.allocate(byteCount: count, alignment: 1)
+        vRaw.initializeMemory(as: UInt8.self, repeating: 0, count: count)
+        let v = vRaw.bindMemory(to: UInt8.self, capacity: count)
+        let hRaw = UnsafeMutableRawPointer.allocate(byteCount: count, alignment: 1)
+        hRaw.initializeMemory(as: UInt8.self, repeating: 0, count: count)
+        let h = hRaw.bindMemory(to: UInt8.self, capacity: count)
+
+        let t = edgeThreshold
+        let w = width
+
+        // Vertical runs — scan each column top-to-bottom.
+        for x in 0..<width {
+            var y = 0
+            while y < height {
+                if grad[y * w + x] >= t {
+                    var endY = y
+                    while endY < height && grad[endY * w + x] >= t { endY += 1 }
+                    let runLen = UInt8(min(255, endY - y))
+                    for i in y..<endY { v[i * w + x] = runLen }
+                    y = endY
+                } else {
+                    y += 1
+                }
+            }
+        }
+
+        // Horizontal runs — scan each row left-to-right.
+        for y in 0..<height {
+            let row = y * w
+            var x = 0
+            while x < width {
+                if grad[row + x] >= t {
+                    var endX = x
+                    while endX < width && grad[row + endX] >= t { endX += 1 }
+                    let runLen = UInt8(min(255, endX - x))
+                    for i in x..<endX { h[row + i] = runLen }
+                    x = endX
+                } else {
+                    x += 1
+                }
+            }
+        }
+
+        vRunLen = v
+        hRunLen = h
     }
 }
