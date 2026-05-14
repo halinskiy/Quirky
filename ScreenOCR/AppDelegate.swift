@@ -582,29 +582,40 @@ final class ModeTogglesView: NSView {
         let offFillHover = NSColor(deviceRed: 0.50, green: 0.50, blue: 0.50, alpha: 0.12)
         let onTextColor = CGColor(red: 0.06, green: 0.06, blue: 0.06, alpha: 1)
         let offTextColor = CGColor(red: 0.55, green: 0.55, blue: 0.55, alpha: 1)
+        // SPX is exclusive — when it's on, non-SPX chips are incompatible;
+        // when any non-SPX mode is on, the SPX chip is incompatible.
+        let spxActive = enabledModes.contains(.spx)
 
         for (i, mode) in CaptureMode.allCases.enumerated() {
             let r = rect(forIndex: i)
             let path = NSBezierPath(roundedRect: r, xRadius: 7, yRadius: 7)
             let isOn = enabledModes.contains(mode)
             let isHovered = hoveredIndex == i
+            let isIncompatible = !isOn && (spxActive != (mode == .spx))
+            let dim: CGFloat = isIncompatible ? 0.35 : 1.0
 
             if isOn {
                 (isHovered ? onFillHover : onFill).setFill()
                 path.fill()
             } else {
                 if isHovered {
-                    offFillHover.setFill()
+                    offFillHover.withAlphaComponent(0.12 * dim).setFill()
                     path.fill()
                 }
-                offStroke.setStroke()
+                offStroke.withAlphaComponent(0.45 * dim).setStroke()
                 path.lineWidth = 1
                 path.stroke()
             }
 
+            let textColor: CGColor
+            if isOn { textColor = onTextColor }
+            else { textColor = CGColor(red: 0.55, green: 0.55, blue: 0.55,
+                                       alpha: 1.0 * dim) }
+            _ = offTextColor
+
             let attrs: [NSAttributedString.Key: Any] = [
                 kCTFontAttributeName as NSAttributedString.Key: Self.labelFont,
-                kCTForegroundColorAttributeName as NSAttributedString.Key: isOn ? onTextColor : offTextColor
+                kCTForegroundColorAttributeName as NSAttributedString.Key: textColor
             ]
             let attr = NSAttributedString(string: mode.displayName, attributes: attrs)
             let line = CTLineCreateWithAttributedString(attr)
