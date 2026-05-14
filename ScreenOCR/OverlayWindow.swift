@@ -143,7 +143,7 @@ final class SelectionView: NSView {
         return [seg.start, seg.end]
     }
 
-    private func spxHandleHitTest(at p: NSPoint, radius: CGFloat = 10) -> SPXHandle? {
+    private func spxHandleHitTest(at p: NSPoint, radius: CGFloat = 8) -> SPXHandle? {
         // Most-recent segments win (drawn on top).
         for i in stride(from: spxCommitted.count - 1, through: 0, by: -1) {
             let points = spxHandlePoints(for: spxCommitted[i])
@@ -487,8 +487,16 @@ final class SelectionView: NSView {
         // In SPX ghost mode, skip the screenshot so the user sees the live
         // underlying screen with markings floating on top.
         let skipBackground = isSPXMode && spxIsGhost
-        if !skipBackground, let bg = backgroundImage {
-            NSImage(cgImage: bg, size: bounds.size).draw(in: bounds)
+        if !skipBackground {
+            if let bg = backgroundImage {
+                NSImage(cgImage: bg, size: bounds.size).draw(in: bounds)
+            } else {
+                // Window is non-opaque (needed for ghost). If the screenshot
+                // hasn't arrived yet, fill with black so the borderless window
+                // still receives mouse clicks instead of passing them through.
+                context.setFillColor(NSColor.black.cgColor)
+                context.fill(bounds)
+            }
         }
 
         if isHEXMode {
@@ -829,8 +837,12 @@ final class SelectionView: NSView {
             width: raw.width * sx,
             height: raw.height * sy
         )
+        // Cap snap tolerance regardless of T so the rect never jumps far from
+        // where the user dragged. minRun stays bound to T (controls what
+        // qualifies as an edge), but the search radius is bounded.
+        let snapTolerance = min(24, max(8, spxMinEdgeLength / 2))
         let snapped = analyzer.snapRect(imgRect,
-                                        tolerance: max(12, spxMinEdgeLength),
+                                        tolerance: snapTolerance,
                                         minRunLength: spxMinEdgeLength)
         let viewSX = bounds.width / CGFloat(image.width)
         let viewSY = bounds.height / CGFloat(image.height)
@@ -1540,6 +1552,7 @@ final class OverlayWindow {
             window.backgroundColor = .clear
             window.hasShadow = false
             window.ignoresMouseEvents = false
+            window.acceptsMouseMovedEvents = true
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             window.isReleasedWhenClosed = false
             let view = SelectionView(frame: screen.frame)
