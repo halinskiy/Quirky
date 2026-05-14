@@ -294,6 +294,38 @@ final class SPXAnalyzer {
                       height: bestBot - bestTop)
     }
 
+    // MARK: - Content bounds inside a rect (shrink-only magnetism)
+
+    /// Returns the tight bounding box of high-gradient pixels strictly inside
+    /// `rect`. Used to shrink a user-drawn selection to the visible content
+    /// it encloses — never expands outside the original rect.
+    /// `minGradient` controls what counts as content; lower picks up softer
+    /// anti-aliased edges, higher only hard contrasts.
+    func contentBoundsIn(_ rect: CGRect, minGradient: UInt8 = 12) -> CGRect? {
+        if gradient == nil { buildGradientMap() }
+        guard let g = gradient else { return nil }
+        let xMin = max(0, Int(rect.minX.rounded()))
+        let xMax = min(width - 1, Int(rect.maxX.rounded()))
+        let yMin = max(0, Int(rect.minY.rounded()))
+        let yMax = min(height - 1, Int(rect.maxY.rounded()))
+        guard xMax > xMin, yMax > yMin else { return nil }
+
+        var minX = Int.max, minY = Int.max, maxX = Int.min, maxY = Int.min
+        for y in yMin...yMax {
+            let row = y * width
+            for x in xMin...xMax where g[row + x] >= minGradient {
+                if x < minX { minX = x }
+                if y < minY { minY = y }
+                if x > maxX { maxX = x }
+                if y > maxY { maxY = y }
+            }
+        }
+        if minX == Int.max { return nil }
+        return CGRect(x: minX, y: minY,
+                      width: maxX - minX + 1,
+                      height: maxY - minY + 1)
+    }
+
     // MARK: - Edge snap (kept for potential ruler use)
 
     func snapToEdge(near x: Int, _ y: Int, radius: Int, threshold: Int = 36) -> (Int, Int) {

@@ -886,49 +886,29 @@ final class SelectionView: NSView {
                    height: r.height * viewSY)
         }
 
-        // 1) Element-bbox autodetect from the rubber-band center, cascading
-        // through several minRun values. Small/rounded UI (icon buttons,
-        // chips) has short straight edges, so the T-bound minRun often misses
-        // them. Try the user's T first, then progressively more permissive
-        // levels, and pick the SMALLEST qualifying bbox — that targets the
-        // innermost element the drag is centered on.
-        let cx = Int(imgRect.midX.rounded())
-        let cy = Int(imgRect.midY.rounded())
-        let userArea = imgRect.width * imgRect.height
-        let runs: [Int] = [
-            spxMinEdgeLength,
-            max(8,  spxMinEdgeLength / 2),
-            max(4,  spxMinEdgeLength / 4),
-            max(2,  spxMinEdgeLength / 8)
-        ]
-        var bestBox: CGRect? = nil
-        var bestArea: CGFloat = .greatestFiniteMagnitude
-        for run in runs {
-            guard let bbox = analyzer.elementBboxAt(x: cx, y: cy,
-                                                    minEdgeLength: run) else { continue }
-            let bboxArea = bbox.width * bbox.height
-            let inter = imgRect.intersection(bbox)
-            let interArea = max(0, inter.width * inter.height)
-            let userCoverage = interArea / max(1, userArea)
-            // Accept any bbox that's plausibly the element the user is
-            // grabbing: substantial overlap, not absurdly larger than the
-            // drag, and not collapsed to a tiny fragment relative to it.
-            guard userCoverage > 0.45 else { continue }
-            guard bboxArea < userArea * 8 else { continue }
-            guard bboxArea > userArea * 0.08 else { continue }
-            if bboxArea < bestArea {
-                bestArea = bboxArea
-                bestBox = bbox
-            }
+        // Shrink-to-content magnetism. We tighten the user's drawn rect
+        // around the visible content it encloses; the snap never grows past
+        // the original drag. A small inset ignores edge pixels that touch
+        // the rect border itself.
+        let inset: CGFloat = 2
+        let scanRect = imgRect.insetBy(dx: inset, dy: inset)
+        guard scanRect.width > 4, scanRect.height > 4 else { return raw }
+        guard let inner = analyzer.contentBoundsIn(scanRect, minGradient: 12) else {
+            return raw
         }
-        if let b = bestBox { return toView(b) }
-
-        // 2) Per-edge snap fallback. Cap radius regardless of T.
-        let snapTolerance = min(24, max(8, spxMinEdgeLength / 2))
-        let snapped = analyzer.snapRect(imgRect,
-                                        tolerance: snapTolerance,
-                                        minRunLength: spxMinEdgeLength)
-        return toView(snapped)
+        // Don't accept a snap that collapses the rect to nothing — that means
+        // we hit only noise; better to keep the user's rect intact.
+        let userArea = imgRect.width * imgRect.height
+        let innerArea = inner.width * inner.height
+        guard innerArea > max(64, userArea * 0.02) else { return raw }
+        // Pad by 1 px so the rect hugs content without clipping outer pixels,
+        // but clamp to the user's original rect (shrink-only).
+        let pX0 = max(imgRect.minX, inner.minX - 1)
+        let pY0 = max(imgRect.minY, inner.minY - 1)
+        let pX1 = min(imgRect.maxX, inner.maxX + 1)
+        let pY1 = min(imgRect.maxY, inner.maxY + 1)
+        let padded = CGRect(x: pX0, y: pY0, width: pX1 - pX0, height: pY1 - pY0)
+        return toView(padded)
     }
 
     private func rectsApproximatelyEqual(_ a: NSRect, _ b: NSRect, tol: CGFloat = 1.0) -> Bool {
