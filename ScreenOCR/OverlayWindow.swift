@@ -287,10 +287,8 @@ final class SelectionView: NSView {
                 spxLiveDragRect = .zero
                 recomputeSPXLiveSegments()
                 needsDisplay = true
-            } else {
-                // Simple click → hide preserving state.
-                onSPXHide?()
             }
+            // A bare click is intentionally a no-op — Esc is the only exit.
             return
         }
         guard isSelecting else { return }
