@@ -55,10 +55,20 @@ final class SelectionView: NSView {
     private var spxLiveV: SPXLiveSegment?
     fileprivate var spxCommitted: [SPXSegment] = []
     fileprivate var spxColorIndex: Int = 0
-    private var spxToleranceIndex: Int = 3
+    private var spxToleranceIndex: Int = 2
     private var spxDragOrigin: NSPoint = .zero
     private var spxIsDragging: Bool = false
     private var spxLiveDragRect: NSRect = .zero  // snapped, in view coords
+    var spxIsGhost: Bool = false                  // OverlayWindow flips this via setSPXGhost
+
+    /// Identifies a draggable handle on a committed segment.
+    fileprivate struct SPXHandle: Equatable {
+        let segmentIndex: Int
+        /// 0=start endpoint, 1=end endpoint for lines; rect uses 0..3 corners.
+        let cornerIndex: Int
+    }
+    private var spxHoveredHandle: SPXHandle?
+    private var spxActiveHandle: SPXHandle?
 
     fileprivate struct SPXTolerance {
         let edgeThreshold: UInt8   // gradient strength — lower catches softer edges
@@ -67,15 +77,19 @@ final class SelectionView: NSView {
     /// 7 steps from "only sharp short edges" to "soft window-scale borders".
     /// Higher T lowers the gradient bar (softer borders qualify) AND raises the
     /// run-length bar (lines pass through text and small UI).
+    /// Monotonic "permissiveness". T1 catches only large, hard boundaries
+    /// (windows, panels, big buttons) — both gradient and run-length bars are
+    /// high. Each step lowers both bars, so by T8 even short text-stroke edges
+    /// and faint anti-aliased borders qualify.
     fileprivate static let spxToleranceLevels: [SPXTolerance] = [
-        SPXTolerance(edgeThreshold: 40, minRun: 4),
-        SPXTolerance(edgeThreshold: 30, minRun: 8),
-        SPXTolerance(edgeThreshold: 22, minRun: 14),
-        SPXTolerance(edgeThreshold: 16, minRun: 22),   // default
-        SPXTolerance(edgeThreshold: 10, minRun: 36),
-        SPXTolerance(edgeThreshold:  6, minRun: 60),
-        SPXTolerance(edgeThreshold:  3, minRun: 100),
-        SPXTolerance(edgeThreshold:  2, minRun: 160)
+        SPXTolerance(edgeThreshold: 50, minRun: 80),
+        SPXTolerance(edgeThreshold: 38, minRun: 50),
+        SPXTolerance(edgeThreshold: 28, minRun: 30),   // default
+        SPXTolerance(edgeThreshold: 20, minRun: 18),
+        SPXTolerance(edgeThreshold: 14, minRun: 10),
+        SPXTolerance(edgeThreshold:  9, minRun: 6),
+        SPXTolerance(edgeThreshold:  5, minRun: 3),
+        SPXTolerance(edgeThreshold:  2, minRun: 2)
     ]
 
     fileprivate struct SPXLiveSegment {
@@ -96,14 +110,12 @@ final class SelectionView: NSView {
             axis == .rect ? "\(pxLength)×\(pxHeight)" : "\(pxLength)"
         }
     }
-    fileprivate static let spxPalette: [NSColor] = [
-        NSColor(deviceRed: 1.00, green: 0.84, blue: 0.04, alpha: 1), // yellow
-        NSColor(deviceRed: 0.35, green: 0.78, blue: 0.98, alpha: 1), // cyan
-        NSColor(deviceRed: 1.00, green: 0.42, blue: 0.46, alpha: 1), // pink
-        NSColor(deviceRed: 0.32, green: 0.78, blue: 0.35, alpha: 1), // green
-        NSColor(deviceRed: 0.75, green: 0.55, blue: 0.95, alpha: 1), // purple
-        NSColor(deviceRed: 1.00, green: 0.62, blue: 0.04, alpha: 1)  // orange
-    ]
+    /// All committed SPX segments use the user's highlight color so the
+    /// markings have a single visual identity. Falls back to yellow.
+    fileprivate var spxSegmentColor: NSColor {
+        let hex = UserDefaults.standard.string(forKey: "highlightColorHex") ?? "FFD60A"
+        return NSColor(hex: hex)
+    }
 
     var screenWordBoxes: [CGRect] = []
     var screenSVGBoxes: [CGRect] = []
@@ -113,6 +125,111 @@ final class SelectionView: NSView {
 
     private var activeBoxes: [CGRect] {
         isSVGMode ? screenSVGBoxes : screenWordBoxes
+    }
+
+    // MARK: SPX handle hit-test
+
+    /// Anchor points of a committed segment in view coords.
+    /// Lines: 2 endpoints. Rects: 4 corners (TL, TR, BL, BR).
+    fileprivate func spxHandlePoints(for seg: SPXSegment) -> [NSPoint] {
+        if seg.axis == .rect {
+            return [
+                NSPoint(x: seg.start.x, y: seg.start.y),
+                NSPoint(x: seg.end.x,   y: seg.start.y),
+                NSPoint(x: seg.start.x, y: seg.end.y),
+                NSPoint(x: seg.end.x,   y: seg.end.y)
+            ]
+        }
+        return [seg.start, seg.end]
+    }
+
+    private func spxHandleHitTest(at p: NSPoint, radius: CGFloat = 10) -> SPXHandle? {
+        // Most-recent segments win (drawn on top).
+        for i in stride(from: spxCommitted.count - 1, through: 0, by: -1) {
+            let points = spxHandlePoints(for: spxCommitted[i])
+            for (j, hp) in points.enumerated() {
+                if hypot(hp.x - p.x, hp.y - p.y) <= radius {
+                    return SPXHandle(segmentIndex: i, cornerIndex: j)
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Update segment endpoint/corner during a resize drag. Snaps the dragged
+    /// anchor to the nearest detected edge on release.
+    private func updateActiveHandle(to p: NSPoint, finalize: Bool) {
+        guard let h = spxActiveHandle, h.segmentIndex < spxCommitted.count else { return }
+        let seg = spxCommitted[h.segmentIndex]
+        let snapped = finalize ? snapViewPoint(p, radius: 18) : p
+
+        if seg.axis == .rect {
+            var minX = seg.start.x, minY = seg.start.y
+            var maxX = seg.end.x,   maxY = seg.end.y
+            switch h.cornerIndex {
+            case 0: minX = snapped.x; minY = snapped.y     // TL
+            case 1: maxX = snapped.x; minY = snapped.y     // TR
+            case 2: minX = snapped.x; maxY = snapped.y     // BL
+            default: maxX = snapped.x; maxY = snapped.y    // BR
+            }
+            if maxX < minX { swap(&minX, &maxX) }
+            if maxY < minY { swap(&minY, &maxY) }
+            let newRect = NSRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+            guard let image = backgroundImage else { return }
+            let sx = CGFloat(image.width) / bounds.width
+            let sy = CGFloat(image.height) / bounds.height
+            let pxW = Int((newRect.width * sx).rounded())
+            let pxH = Int((newRect.height * sy).rounded())
+            spxCommitted[h.segmentIndex] = SPXSegment(
+                axis: .rect,
+                start: NSPoint(x: minX, y: minY),
+                end: NSPoint(x: maxX, y: maxY),
+                pxLength: pxW, pxHeight: pxH, color: seg.color
+            )
+        } else {
+            // Constrain motion to the segment's axis so H stays horizontal, V vertical.
+            let newStart: NSPoint
+            let newEnd: NSPoint
+            if seg.axis == .horizontal {
+                let y = seg.start.y
+                if h.cornerIndex == 0 { newStart = NSPoint(x: snapped.x, y: y); newEnd = seg.end }
+                else { newStart = seg.start; newEnd = NSPoint(x: snapped.x, y: y) }
+            } else {
+                let x = seg.start.x
+                if h.cornerIndex == 0 { newStart = NSPoint(x: x, y: snapped.y); newEnd = seg.end }
+                else { newStart = seg.start; newEnd = NSPoint(x: x, y: snapped.y) }
+            }
+            let lengthPxImage: Int = { () -> Int in
+                guard let image = backgroundImage else {
+                    return Int(hypot(newEnd.x - newStart.x, newEnd.y - newStart.y).rounded())
+                }
+                let sx = CGFloat(image.width) / bounds.width
+                let sy = CGFloat(image.height) / bounds.height
+                let dx = abs(newEnd.x - newStart.x) * sx
+                let dy = abs(newEnd.y - newStart.y) * sy
+                return Int((dx + dy).rounded())  // axis-aligned, one term is 0
+            }()
+            spxCommitted[h.segmentIndex] = SPXSegment(
+                axis: seg.axis,
+                start: newStart, end: newEnd,
+                pxLength: lengthPxImage, pxHeight: 0, color: seg.color
+            )
+        }
+        if finalize { copySPXLengthOrSizeToPasteboard(spxCommitted[h.segmentIndex]) }
+        needsDisplay = true
+    }
+
+    private func copySPXLengthOrSizeToPasteboard(_ seg: SPXSegment) {
+        let s = seg.axis == .rect ? "\(seg.pxLength) × \(seg.pxHeight) px" : "\(seg.pxLength) px"
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(s, forType: .string)
+    }
+
+    private func snapViewPoint(_ p: NSPoint, radius: Int) -> NSPoint {
+        guard let analyzer = spxAnalyzer, let (px, py) = viewToImagePixel(p) else { return p }
+        let (snapX, snapY) = analyzer.snapToEdge(near: px, py, radius: radius)
+        return imagePixelToView(snapX, snapY)
     }
 
     override func viewDidMoveToWindow() {
@@ -163,7 +280,14 @@ final class SelectionView: NSView {
         }
         if isSPXMode {
             spxCursor = point
-            recomputeSPXLiveSegments()
+            // Hit-test resize handles first — if hovering one, hide the live
+            // crosshair so it doesn't fight the handle.
+            let newHover = spxHandleHitTest(at: point)
+            if newHover != spxHoveredHandle {
+                spxHoveredHandle = newHover
+                if newHover != nil { spxLiveH = nil; spxLiveV = nil }
+            }
+            if newHover == nil { recomputeSPXLiveSegments() }
             needsDisplay = true
             return
         }
@@ -181,6 +305,12 @@ final class SelectionView: NSView {
         let point = convert(event.locationInWindow, from: nil)
         startPoint = point
         if isSPXMode {
+            // If a handle is under the cursor, mouseDown enters resize.
+            if let h = spxHandleHitTest(at: point) {
+                spxActiveHandle = h
+                spxCursor = point
+                return
+            }
             spxDragOrigin = point
             spxIsDragging = false
             spxLiveDragRect = .zero
@@ -222,6 +352,10 @@ final class SelectionView: NSView {
         }
         if isSPXMode {
             spxCursor = current
+            if spxActiveHandle != nil {
+                updateActiveHandle(to: current, finalize: false)
+                return
+            }
             if !spxIsDragging && hypot(current.x - spxDragOrigin.x, current.y - spxDragOrigin.y) > 3 {
                 spxIsDragging = true
             }
@@ -281,6 +415,14 @@ final class SelectionView: NSView {
             return
         }
         if isSPXMode {
+            if spxActiveHandle != nil {
+                let current = convert(event.locationInWindow, from: nil)
+                updateActiveHandle(to: current, finalize: true)
+                spxActiveHandle = nil
+                recomputeSPXLiveSegments()
+                needsDisplay = true
+                return
+            }
             if spxIsDragging {
                 commitSPXRect(spxLiveDragRect)
                 spxIsDragging = false
@@ -342,7 +484,10 @@ final class SelectionView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
 
-        if let bg = backgroundImage {
+        // In SPX ghost mode, skip the screenshot so the user sees the live
+        // underlying screen with markings floating on top.
+        let skipBackground = isSPXMode && spxIsGhost
+        if !skipBackground, let bg = backgroundImage {
             NSImage(cgImage: bg, size: bounds.size).draw(in: bounds)
         }
 
@@ -567,6 +712,9 @@ final class SelectionView: NSView {
         }
         spxLiveH = nil
         spxLiveV = nil
+        spxIsGhost = false
+        spxHoveredHandle = nil
+        spxActiveHandle = nil
         // NB: spxCommitted / spxColorIndex are intentionally NOT cleared here.
         // The OverlayWindow restores prior segments via setSPXState(...) right
         // after this call when the user re-enters SPX. Esc → dismiss() wipes.
@@ -574,7 +722,7 @@ final class SelectionView: NSView {
         let stored = UserDefaults.standard.object(forKey: "spxToleranceIndex") as? Int
         let n = SelectionView.spxToleranceLevels.count
         if let s = stored, s >= 0, s < n { spxToleranceIndex = s }
-        else { spxToleranceIndex = 3 }
+        else { spxToleranceIndex = 2 }
         applySPXToleranceToAnalyzer()
         needsDisplay = true
     }
@@ -586,6 +734,9 @@ final class SelectionView: NSView {
         spxLiveV = nil
         spxCommitted.removeAll()
         spxColorIndex = 0
+        spxIsGhost = false
+        spxHoveredHandle = nil
+        spxActiveHandle = nil
         onSPXSizePicked = nil
     }
 
@@ -653,8 +804,7 @@ final class SelectionView: NSView {
     private func commitSPXAxis(_ axis: SPXSegment.Axis) {
         let live: SPXLiveSegment? = (axis == .horizontal) ? spxLiveH : spxLiveV
         guard let seg = live, seg.pxLength > 1 else { return }
-        let color = SelectionView.spxPalette[spxColorIndex % SelectionView.spxPalette.count]
-        spxColorIndex += 1
+        let color = spxSegmentColor
         spxCommitted.append(SPXSegment(axis: axis, start: seg.start, end: seg.end,
                                        pxLength: seg.pxLength, pxHeight: 0, color: color))
         copySPXLengthToPasteboard(seg.pxLength)
@@ -698,8 +848,7 @@ final class SelectionView: NSView {
         let sy = CGFloat(image.height) / bounds.height
         let pxW = Int((rect.width * sx).rounded())
         let pxH = Int((rect.height * sy).rounded())
-        let color = SelectionView.spxPalette[spxColorIndex % SelectionView.spxPalette.count]
-        spxColorIndex += 1
+        let color = spxSegmentColor
         spxCommitted.append(SPXSegment(
             axis: .rect,
             start: NSPoint(x: rect.minX, y: rect.minY),
@@ -728,109 +877,141 @@ final class SelectionView: NSView {
     // MARK: SPX drawing
 
     private func drawSPXHUD(context: CGContext) {
-        // Background dim so colored lines pop on busy screens. Very subtle.
-        context.saveGState()
-        context.setFillColor(NSColor.black.withAlphaComponent(0.08).cgColor)
-        context.fill(bounds)
-        context.restoreGState()
+        let ghost = spxIsGhost
+        if !ghost {
+            // Subtle dim so colored markings pop on busy screens.
+            context.saveGState()
+            context.setFillColor(NSColor.black.withAlphaComponent(0.08).cgColor)
+            context.fill(bounds)
+            context.restoreGState()
+        }
 
-        // 1) Committed segments (persistent).
-        for seg in spxCommitted {
+        let segColor = spxSegmentColor
+
+        // 1) Committed segments — single shared color, slightly translucent in ghost.
+        let strongAlpha: CGFloat = ghost ? 0.65 : 1.0
+        for (i, seg) in spxCommitted.enumerated() {
+            let isHovered = (spxHoveredHandle?.segmentIndex == i)
+            let activeIdx = (spxActiveHandle?.segmentIndex == i) ? spxActiveHandle?.cornerIndex : nil
             if seg.axis == .rect {
                 let r = NSRect(x: seg.start.x, y: seg.start.y,
                                width: seg.end.x - seg.start.x,
                                height: seg.end.y - seg.start.y)
-                drawSPXRect(context: context, rect: r, color: seg.color,
-                            label: seg.label, strong: true)
+                drawSPXRect(context: context, rect: r, color: segColor,
+                            label: seg.label, alpha: strongAlpha, lineW: 1.6, drawHandles: !ghost,
+                            hoveredHandle: isHovered ? spxHoveredHandle?.cornerIndex : nil,
+                            activeHandle: activeIdx)
             } else {
                 drawSPXSegmentLine(context: context, start: seg.start, end: seg.end,
-                                   color: seg.color, label: seg.label, strong: true)
+                                   color: segColor, label: seg.label,
+                                   alpha: strongAlpha, lineW: 1.6, drawHandles: !ghost,
+                                   hoveredHandle: isHovered ? spxHoveredHandle?.cornerIndex : nil,
+                                   activeHandle: activeIdx)
             }
         }
 
-        let hex = UserDefaults.standard.string(forKey: "highlightColorHex") ?? "FFD60A"
-        let liveColor = NSColor(hex: hex)
-
-        // 2) Live preview: either drag-rect (during mouseDragged) or H/V crosshair.
-        if spxIsDragging && spxLiveDragRect.width > 1 && spxLiveDragRect.height > 1 {
-            let pxW: Int, pxH: Int
-            if let image = backgroundImage {
-                pxW = Int((spxLiveDragRect.width * CGFloat(image.width) / bounds.width).rounded())
-                pxH = Int((spxLiveDragRect.height * CGFloat(image.height) / bounds.height).rounded())
-            } else { pxW = Int(spxLiveDragRect.width); pxH = Int(spxLiveDragRect.height) }
-            drawSPXRect(context: context, rect: spxLiveDragRect, color: liveColor,
-                        label: "\(pxW)×\(pxH)", strong: false)
-        } else {
-            if let h = spxLiveH {
-                drawSPXSegmentLine(context: context, start: h.start, end: h.end,
-                                   color: liveColor, label: "\(h.pxLength)", strong: false)
+        // 2) Live preview & crosshair — only in interactive mode.
+        if !ghost {
+            if spxIsDragging && spxLiveDragRect.width > 1 && spxLiveDragRect.height > 1 {
+                let pxW: Int, pxH: Int
+                if let image = backgroundImage {
+                    pxW = Int((spxLiveDragRect.width * CGFloat(image.width) / bounds.width).rounded())
+                    pxH = Int((spxLiveDragRect.height * CGFloat(image.height) / bounds.height).rounded())
+                } else { pxW = Int(spxLiveDragRect.width); pxH = Int(spxLiveDragRect.height) }
+                drawSPXRect(context: context, rect: spxLiveDragRect, color: segColor,
+                            label: "\(pxW)×\(pxH)", alpha: 0.7, lineW: 1.0,
+                            drawHandles: false, hoveredHandle: nil, activeHandle: nil)
+            } else if spxActiveHandle == nil {
+                if let h = spxLiveH {
+                    drawSPXSegmentLine(context: context, start: h.start, end: h.end,
+                                       color: segColor, label: "\(h.pxLength)",
+                                       alpha: 0.7, lineW: 1.0, drawHandles: false,
+                                       hoveredHandle: nil, activeHandle: nil)
+                }
+                if let v = spxLiveV {
+                    drawSPXSegmentLine(context: context, start: v.start, end: v.end,
+                                       color: segColor, label: "\(v.pxLength)",
+                                       alpha: 0.7, lineW: 1.0, drawHandles: false,
+                                       hoveredHandle: nil, activeHandle: nil)
+                }
             }
-            if let v = spxLiveV {
-                drawSPXSegmentLine(context: context, start: v.start, end: v.end,
-                                   color: liveColor, label: "\(v.pxLength)", strong: false)
+
+            if spxCursor.x > 0 || spxCursor.y > 0, spxActiveHandle == nil, !spxIsDragging {
+                context.saveGState()
+                context.setFillColor(segColor.cgColor)
+                let r: CGFloat = 2.5
+                context.fillEllipse(in: CGRect(x: spxCursor.x - r, y: spxCursor.y - r,
+                                               width: r * 2, height: r * 2))
+                context.restoreGState()
             }
-        }
 
-        // Center dot at cursor for precision.
-        if spxCursor.x > 0 || spxCursor.y > 0 {
-            context.saveGState()
-            context.setFillColor(liveColor.cgColor)
-            let r: CGFloat = 2.5
-            context.fillEllipse(in: CGRect(x: spxCursor.x - r, y: spxCursor.y - r,
-                                           width: r * 2, height: r * 2))
-            context.restoreGState()
+            drawSPXToleranceChip(context: context)
         }
-
-        drawSPXToleranceChip(context: context)
     }
 
-    /// Draws an outlined rectangle measurement with a "W×H" pill anchored at
-    /// the top-left of the rect. Committed rects are strong; live drag is thin.
+    /// Rounded rectangle measurement with corner handles for resizing.
     private func drawSPXRect(context: CGContext, rect: NSRect, color: NSColor,
-                             label: String, strong: Bool) {
+                             label: String, alpha: CGFloat, lineW: CGFloat,
+                             drawHandles: Bool, hoveredHandle: Int?, activeHandle: Int?) {
         guard rect.width >= 1, rect.height >= 1 else { return }
-        let alpha: CGFloat = strong ? 1.0 : 0.7
-        let lineW: CGFloat = strong ? 1.5 : 1.0
         let drawColor = color.withAlphaComponent(alpha)
+        let radius: CGFloat = min(8, min(rect.width, rect.height) / 4)
 
         // Halo for legibility.
         context.saveGState()
-        context.setStrokeColor(NSColor.black.withAlphaComponent(strong ? 0.5 : 0.3).cgColor)
+        context.setStrokeColor(NSColor.black.withAlphaComponent(0.4 * alpha).cgColor)
         context.setLineWidth(lineW + 1.5)
-        context.stroke(rect.insetBy(dx: -0.5, dy: -0.5))
+        context.setLineJoin(.round)
+        context.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
+        context.strokePath()
         context.restoreGState()
 
-        // Outline.
-        drawColor.setStroke()
-        let path = NSBezierPath(rect: rect)
-        path.lineWidth = lineW
-        path.stroke()
+        // Main rounded outline.
+        context.saveGState()
+        context.setStrokeColor(drawColor.cgColor)
+        context.setLineWidth(lineW)
+        context.setLineJoin(.round)
+        context.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
+        context.strokePath()
+        context.restoreGState()
 
-        // Corner ticks for a measurement-tool feel.
-        let tick: CGFloat = strong ? 6 : 4
-        let caps = NSBezierPath()
-        let cs = [rect.origin,
-                  NSPoint(x: rect.maxX, y: rect.minY),
-                  NSPoint(x: rect.minX, y: rect.maxY),
-                  NSPoint(x: rect.maxX, y: rect.maxY)]
-        for c in cs {
-            // Just two small ticks perpendicular at each corner.
-            caps.move(to: NSPoint(x: c.x - tick, y: c.y)); caps.line(to: NSPoint(x: c.x + tick, y: c.y))
-            caps.move(to: NSPoint(x: c.x, y: c.y - tick)); caps.line(to: NSPoint(x: c.x, y: c.y + tick))
+        // Corner handles (TL, TR, BL, BR).
+        if drawHandles {
+            let corners = [rect.origin,
+                           NSPoint(x: rect.maxX, y: rect.minY),
+                           NSPoint(x: rect.minX, y: rect.maxY),
+                           NSPoint(x: rect.maxX, y: rect.maxY)]
+            for (i, c) in corners.enumerated() {
+                drawHandle(context: context, at: c, color: drawColor,
+                           hovered: i == hoveredHandle, active: i == activeHandle)
+            }
         }
-        caps.lineWidth = lineW
-        caps.stroke()
 
-        // Label below the rect, or above if no room.
-        let labelCenter: NSPoint
-        if rect.minY > 22 {
-            labelCenter = NSPoint(x: rect.midX, y: rect.minY - 12)
-        } else {
-            labelCenter = NSPoint(x: rect.midX, y: rect.maxY + 12)
-        }
+        let labelCenter = rect.minY > 22
+            ? NSPoint(x: rect.midX, y: rect.minY - 12)
+            : NSPoint(x: rect.midX, y: rect.maxY + 12)
         let white = NSColor(deviceRed: 1, green: 1, blue: 1, alpha: 1).cgColor
         drawSPXPill(context: context, near: labelCenter, text: label,
                     textColor: white, bgColor: drawColor)
+    }
+
+    /// Small filled circle marking a resize handle. Grows on hover/active.
+    private func drawHandle(context: CGContext, at p: NSPoint, color: NSColor,
+                            hovered: Bool, active: Bool) {
+        let r: CGFloat = active ? 6 : (hovered ? 5 : 4)
+        let outerR = r + 1.5
+        context.saveGState()
+        context.setFillColor(NSColor.black.withAlphaComponent(0.5).cgColor)
+        context.fillEllipse(in: CGRect(x: p.x - outerR, y: p.y - outerR,
+                                       width: outerR * 2, height: outerR * 2))
+        context.setFillColor(NSColor.white.cgColor)
+        context.fillEllipse(in: CGRect(x: p.x - r, y: p.y - r,
+                                       width: r * 2, height: r * 2))
+        context.setFillColor(color.cgColor)
+        let inner = r - 1.5
+        context.fillEllipse(in: CGRect(x: p.x - inner, y: p.y - inner,
+                                       width: inner * 2, height: inner * 2))
+        context.restoreGState()
     }
 
     /// Top-right chip: "T  ▮▮▮▯▯  12 px" — visualizes the current tolerance level.
@@ -881,59 +1062,47 @@ final class SelectionView: NSView {
         }
     }
 
-    /// Draws a measurement segment with perpendicular end caps and a pill label
-    /// near its midpoint. `strong` is for committed segments (thicker + opaque);
-    /// non-strong is for live preview (thinner + slightly translucent).
+    /// Axis-aligned measurement line with rounded caps and endpoint handles.
     private func drawSPXSegmentLine(context: CGContext, start: NSPoint, end: NSPoint,
-                                    color: NSColor, label: String, strong: Bool) {
+                                    color: NSColor, label: String,
+                                    alpha: CGFloat, lineW: CGFloat,
+                                    drawHandles: Bool, hoveredHandle: Int?, activeHandle: Int?) {
         let isHorizontal = abs(end.y - start.y) < 0.5
         let isVertical = abs(end.x - start.x) < 0.5
         guard isHorizontal || isVertical else { return }
 
-        let alpha: CGFloat = strong ? 1.0 : 0.7
-        let lineW: CGFloat = strong ? 1.5 : 1.0
         let drawColor = color.withAlphaComponent(alpha)
 
-        // Halo for legibility on busy backgrounds.
+        // Halo.
         context.saveGState()
-        context.setStrokeColor(NSColor.black.withAlphaComponent(strong ? 0.5 : 0.3).cgColor)
+        context.setStrokeColor(NSColor.black.withAlphaComponent(0.4 * alpha).cgColor)
         context.setLineWidth(lineW + 1.5)
+        context.setLineCap(.round)
         context.move(to: start); context.addLine(to: end)
         context.strokePath()
         context.restoreGState()
 
-        // Main line.
-        drawColor.setStroke()
-        let line = NSBezierPath()
-        line.move(to: start); line.line(to: end)
-        line.lineWidth = lineW
-        line.stroke()
+        // Main line with rounded caps.
+        context.saveGState()
+        context.setStrokeColor(drawColor.cgColor)
+        context.setLineWidth(lineW)
+        context.setLineCap(.round)
+        context.move(to: start); context.addLine(to: end)
+        context.strokePath()
+        context.restoreGState()
 
-        // Perpendicular end caps (short tick marks marking each endpoint).
-        let cap: CGFloat = strong ? 5 : 4
-        let caps = NSBezierPath()
-        if isHorizontal {
-            caps.move(to: NSPoint(x: start.x, y: start.y - cap))
-            caps.line(to: NSPoint(x: start.x, y: start.y + cap))
-            caps.move(to: NSPoint(x: end.x,   y: end.y - cap))
-            caps.line(to: NSPoint(x: end.x,   y: end.y + cap))
-        } else {
-            caps.move(to: NSPoint(x: start.x - cap, y: start.y))
-            caps.line(to: NSPoint(x: start.x + cap, y: start.y))
-            caps.move(to: NSPoint(x: end.x - cap,   y: end.y))
-            caps.line(to: NSPoint(x: end.x + cap,   y: end.y))
+        if drawHandles {
+            drawHandle(context: context, at: start, color: drawColor,
+                       hovered: hoveredHandle == 0, active: activeHandle == 0)
+            drawHandle(context: context, at: end, color: drawColor,
+                       hovered: hoveredHandle == 1, active: activeHandle == 1)
         }
-        caps.lineWidth = lineW
-        caps.stroke()
 
-        // Label pill — offset perpendicular to the line by ~10 px.
+        // Label pill perpendicular-offset from the midpoint.
         let mid = NSPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
-        let labelCenter: NSPoint
-        if isHorizontal {
-            labelCenter = NSPoint(x: mid.x, y: mid.y - 12)
-        } else {
-            labelCenter = NSPoint(x: mid.x + 22, y: mid.y)
-        }
+        let labelCenter: NSPoint = isHorizontal
+            ? NSPoint(x: mid.x, y: mid.y - 14)
+            : NSPoint(x: mid.x + 24, y: mid.y)
         let white = NSColor(deviceRed: 1, green: 1, blue: 1, alpha: 1).cgColor
         drawSPXPill(context: context, near: labelCenter, text: label,
                     textColor: white, bgColor: drawColor)
@@ -1218,6 +1387,24 @@ final class OverlayWindow {
 
     /// Hide the overlay without invoking the cancellation callback. Preserves
     /// SPX segments so the next showForSPX / switchToSPXMode restores them.
+    /// Toggles SPX overlay between opaque-interactive and ghost (click-through,
+    /// no background image, segments rendered translucent over the live screen).
+    func setSPXGhost(_ ghost: Bool) {
+        for window in windows {
+            guard let view = window.contentView as? SelectionView, view.isSPXMode else { continue }
+            window.ignoresMouseEvents = ghost
+            view.spxIsGhost = ghost
+            view.needsDisplay = true
+        }
+        if ghost {
+            NSCursor.arrow.set()
+            windows.first?.resignKey()
+        } else {
+            NSCursor.crosshair.set()
+            windows.first?.makeKeyAndOrderFront(nil)
+        }
+    }
+
     func hidePreservingSPX() {
         if let view = windows.first?.contentView as? SelectionView, view.isSPXMode {
             spxPreservedSegments = view.spxCommitted
@@ -1349,8 +1536,8 @@ final class OverlayWindow {
         for screen in NSScreen.screens {
             let window = KeyWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
             window.level = .init(Int(CGShieldingWindowLevel()))
-            window.isOpaque = true
-            window.backgroundColor = .black
+            window.isOpaque = false                     // allow per-pixel alpha (needed for SPX ghost mode)
+            window.backgroundColor = .clear
             window.hasShadow = false
             window.ignoresMouseEvents = false
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]

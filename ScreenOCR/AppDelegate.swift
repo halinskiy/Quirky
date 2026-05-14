@@ -38,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isCapturing = false
     private var currentMode: CaptureMode = .ocr
     private var spxResumePending = false  // true while SPX is hidden-but-preserved
+    private var spxIsGhost = false        // SPX overlay is in see-through (click-through) state
     private var previousApp: NSRunningApplication?
     private var preCapturedImages: [(displayID: CGDirectDisplayID, bounds: CGRect, image: CGImage)] = []
 
@@ -207,10 +208,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func handleCaptureHotkey() {
         if isCapturing {
-            cycleMode()
+            // SPX is exclusive: in SPX the hotkey toggles ghost/opaque instead
+            // of cycling modes (no other mode is enabled alongside SPX anyway).
+            if currentMode == .spx {
+                spxIsGhost.toggle()
+                overlay.setSPXGhost(spxIsGhost)
+            } else {
+                cycleMode()
+            }
         } else {
-            // If SPX is hidden-but-preserved, the hotkey resumes it directly
-            // instead of starting fresh from the first enabled mode.
             currentMode = spxResumePending ? .spx : (EnabledModesStore.load().first ?? .ocr)
             startCapture()
         }
@@ -355,6 +361,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func cancelCapture() {
         isCapturing = false
         spxResumePending = false  // Esc / mode-switch wipes preserved SPX
+        spxIsGhost = false
         preCapturedImages = []
         smartReturnFocus()
     }
@@ -481,6 +488,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if enabled.contains(mode) {
             guard enabled.count > 1 else { return }
             enabled.removeAll { $0 == mode }
+        } else if mode == .spx {
+            // SPX is exclusive — enabling it shuts off everything else.
+            enabled = [.spx]
+        } else if enabled.contains(.spx) {
+            // Enabling any non-SPX mode while SPX is on switches into a
+            // non-SPX configuration with just the requested mode.
+            enabled = [mode]
         } else {
             enabled.append(mode)
         }
