@@ -310,8 +310,15 @@ final class SelectionView: NSView {
         let point = convert(event.locationInWindow, from: nil)
         startPoint = point
         if isSPXMode {
-            // If a handle is under the cursor, mouseDown enters resize.
             if let h = spxHandleHitTest(at: point) {
+                // Double-click a rect's corner → re-run magnetism on the
+                // segment's current bounds, animate the rect to fit content.
+                if event.clickCount >= 2,
+                   h.segmentIndex < spxCommitted.count,
+                   spxCommitted[h.segmentIndex].axis == .rect {
+                    magnetizeRectSegment(at: h.segmentIndex)
+                    return
+                }
                 spxActiveHandle = h
                 spxCursor = point
                 return
@@ -951,6 +958,68 @@ final class SelectionView: NSView {
         }
         spxSnapAnimTimer = t
         RunLoop.current.add(t, forMode: .common)
+    }
+
+    /// Re-shrink a committed rect segment to its enclosed content. Animates
+    /// the rect bounds in place so the user sees the corner snap toward what
+    /// they really meant to measure.
+    private func magnetizeRectSegment(at index: Int) {
+        guard index < spxCommitted.count else { return }
+        let seg = spxCommitted[index]
+        guard seg.axis == .rect else { return }
+        let current = NSRect(
+            x: seg.start.x, y: seg.start.y,
+            width: seg.end.x - seg.start.x,
+            height: seg.end.y - seg.start.y
+        )
+        let target = snappedDragRect(start: NSPoint(x: current.minX, y: current.minY),
+                                     end:   NSPoint(x: current.maxX, y: current.maxY))
+        guard !rectsApproximatelyEqual(current, target) else { return }
+        animateSegmentRect(at: index, from: current, to: target)
+    }
+
+    /// Lerps a rect-typed segment in place (used by magnetize-on-double-click).
+    private func animateSegmentRect(at index: Int, from: NSRect, to: NSRect) {
+        spxSnapAnimTimer?.invalidate()
+        spxSnapAnimTimer = nil
+        let start = Date()
+        let duration = spxSnapAnimDuration
+        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            guard index < self.spxCommitted.count else { t.invalidate(); return }
+            let now = Date().timeIntervalSince(start)
+            let p = min(1.0, max(0.0, now / duration))
+            let eased = 1.0 - pow(1.0 - p, 3)
+            let r = NSRect(
+                x: from.minX + (to.minX - from.minX) * CGFloat(eased),
+                y: from.minY + (to.minY - from.minY) * CGFloat(eased),
+                width:  from.width  + (to.width  - from.width)  * CGFloat(eased),
+                height: from.height + (to.height - from.height) * CGFloat(eased)
+            )
+            let seg = self.spxCommitted[index]
+            var pxW = Int(r.width.rounded())
+            var pxH = Int(r.height.rounded())
+            if let img = self.backgroundImage {
+                pxW = Int((r.width  * CGFloat(img.width)  / self.bounds.width).rounded())
+                pxH = Int((r.height * CGFloat(img.height) / self.bounds.height).rounded())
+            }
+            self.spxCommitted[index] = SPXSegment(
+                axis: .rect,
+                start: NSPoint(x: r.minX, y: r.minY),
+                end:   NSPoint(x: r.maxX, y: r.maxY),
+                pxLength: pxW, pxHeight: pxH, color: seg.color
+            )
+            self.needsDisplay = true
+            if p >= 1.0 {
+                t.invalidate()
+                self.spxSnapAnimTimer = nil
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                pb.setString("\(pxW) × \(pxH) px", forType: .string)
+            }
+        }
+        spxSnapAnimTimer = timer
+        RunLoop.current.add(timer, forMode: .common)
     }
 
     private func commitSPXRect(_ rect: NSRect) {
