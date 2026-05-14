@@ -55,6 +55,64 @@ final class SPXAnalyzer {
         if let h = hRunLen { UnsafeMutableRawPointer(h).deallocate() }
     }
 
+    // MARK: - Horizontal / vertical extents (rays from a point to long edges)
+
+    /// Extends a horizontal ray at row `y` left and right from column `x` until
+    /// it hits a "long" vertical edge in each direction. Returns the column
+    /// indices in image pixels. If no edge is found in a direction, returns
+    /// the canvas border (0 or width - 1).
+    func horizontalExtent(at x: Int, y: Int, minEdgeLength: Int = 12) -> (left: Int, right: Int)? {
+        guard x >= 0, y >= 0, x < width, y < height else { return nil }
+        if vRunLen == nil { buildRunMaps() }
+        guard let v = vRunLen else { return nil }
+        let minLen = UInt8(min(255, max(1, minEdgeLength)))
+        let w = width
+        let row = y * w
+
+        var left = 0
+        if x > 0 {
+            var xi = x - 1
+            while xi >= 0 {
+                if v[row + xi] >= minLen { left = xi; break }
+                xi -= 1
+            }
+        }
+
+        var right = width - 1
+        if x < width - 1 {
+            for xi in (x + 1)..<width where v[row + xi] >= minLen {
+                right = xi; break
+            }
+        }
+        return (left, right)
+    }
+
+    /// Vertical analogue of `horizontalExtent`.
+    func verticalExtent(at x: Int, y: Int, minEdgeLength: Int = 12) -> (top: Int, bottom: Int)? {
+        guard x >= 0, y >= 0, x < width, y < height else { return nil }
+        if hRunLen == nil { buildRunMaps() }
+        guard let h = hRunLen else { return nil }
+        let minLen = UInt8(min(255, max(1, minEdgeLength)))
+        let w = width
+
+        var top = 0
+        if y > 0 {
+            var yi = y - 1
+            while yi >= 0 {
+                if h[yi * w + x] >= minLen { top = yi; break }
+                yi -= 1
+            }
+        }
+
+        var bottom = height - 1
+        if y < height - 1 {
+            for yi in (y + 1)..<height where h[yi * w + x] >= minLen {
+                bottom = yi; break
+            }
+        }
+        return (top, bottom)
+    }
+
     // MARK: - Element bbox (raycast over long edges)
 
     /// Returns the bounding rect of the smallest enclosing UI element around

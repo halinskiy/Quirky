@@ -42,14 +42,37 @@ final class SelectionView: NSView {
     private var domPoint: NSPoint = .zero
     private var hoveredDOMElement: DOMElementBox?
 
-    // SPX mode state — PixelSnap-style drag rect with auto-snap to edges
-    // triggers auto-detection of the element bbox under the cursor.
+    // SPX mode state — crosshair whose H/V rays clip to detected edges.
+    // Press H to commit the current horizontal segment, V for vertical;
+    // commits accumulate on screen and copy "{n} px" to the clipboard.
     private var spxAnalyzer: SPXAnalyzer?
     private var spxCursor: NSPoint = .zero
-    private var spxRectStart: NSPoint = .zero
-    private var spxRectEnd: NSPoint = .zero
-    private var spxRectActive: Bool = false
-    private var spxLastSnapped: NSRect = .zero
+    private var spxLiveH: SPXLiveSegment?
+    private var spxLiveV: SPXLiveSegment?
+    private var spxCommitted: [SPXSegment] = []
+    private var spxColorIndex: Int = 0
+
+    fileprivate struct SPXLiveSegment {
+        let start: NSPoint       // view coords
+        let end: NSPoint         // view coords
+        let pxLength: Int        // image pixels, real device pixels
+    }
+    fileprivate struct SPXSegment {
+        enum Axis { case horizontal, vertical }
+        let axis: Axis
+        let start: NSPoint
+        let end: NSPoint
+        let pxLength: Int
+        let color: NSColor
+    }
+    fileprivate static let spxPalette: [NSColor] = [
+        NSColor(deviceRed: 1.00, green: 0.84, blue: 0.04, alpha: 1), // yellow
+        NSColor(deviceRed: 0.35, green: 0.78, blue: 0.98, alpha: 1), // cyan
+        NSColor(deviceRed: 1.00, green: 0.42, blue: 0.46, alpha: 1), // pink
+        NSColor(deviceRed: 0.32, green: 0.78, blue: 0.35, alpha: 1), // green
+        NSColor(deviceRed: 0.75, green: 0.55, blue: 0.95, alpha: 1), // purple
+        NSColor(deviceRed: 1.00, green: 0.62, blue: 0.04, alpha: 1)  // orange
+    ]
 
     var screenWordBoxes: [CGRect] = []
     var screenSVGBoxes: [CGRect] = []
@@ -109,6 +132,7 @@ final class SelectionView: NSView {
         }
         if isSPXMode {
             spxCursor = point
+            recomputeSPXLiveSegments()
             needsDisplay = true
             return
         }
@@ -126,11 +150,11 @@ final class SelectionView: NSView {
         let point = convert(event.locationInWindow, from: nil)
         startPoint = point
         if isSPXMode {
-            spxRectStart = point
-            spxRectEnd = point
-            spxRectActive = false
-            spxLastSnapped = .zero
+            // Click also commits both axes at the current cursor — same as H + V.
             spxCursor = point
+            recomputeSPXLiveSegments()
+            commitSPXAxis(.horizontal)
+            commitSPXAxis(.vertical)
             return
         }
         selectionRect = .zero
@@ -168,15 +192,7 @@ final class SelectionView: NSView {
         }
         if isSPXMode {
             spxCursor = current
-            if !spxRectActive {
-                if hypot(current.x - startPoint.x, current.y - startPoint.y) > 3 {
-                    spxRectActive = true
-                }
-            }
-            spxRectEnd = current
-            if spxRectActive {
-                spxLastSnapped = snappedViewRect(start: spxRectStart, end: spxRectEnd)
-            }
+            recomputeSPXLiveSegments()
             needsDisplay = true
             return
         }
@@ -228,22 +244,7 @@ final class SelectionView: NSView {
             return
         }
         if isSPXMode {
-            if spxRectActive {
-                // Drag → rubber-band rect with edge snap. Output the snapped W×H.
-                let snapped = snappedViewRect(start: spxRectStart, end: spxRectEnd)
-                let pxDims = viewRectToImagePixelSize(snapped)
-                let label = "\(pxDims.w)×\(pxDims.h) px"
-                onSPXSizePicked?(label)
-            } else {
-                // Click without drag → auto-detect element bbox under the cursor.
-                let point = convert(event.locationInWindow, from: nil)
-                guard let (px, py) = viewToImagePixel(point),
-                      let analyzer = spxAnalyzer,
-                      let bbox = analyzer.elementBboxAt(x: px, y: py, minEdgeLength: spxMinEdgeLength)
-                else { onCancel?(); return }
-                let label = "\(Int(bbox.width.rounded()))×\(Int(bbox.height.rounded())) px"
-                onSPXSizePicked?(label)
-            }
+            // mouseDown already committed; mouseUp is a no-op so the overlay stays open.
             return
         }
         guard isSelecting else { return }
@@ -277,7 +278,18 @@ final class SelectionView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53 { onCancel?() }
+        if event.keyCode == 53 { onCancel?(); return }      // Esc
+        if isSPXMode {
+            switch event.keyCode {
+            case 4:  commitSPXAxis(.horizontal)              // H
+            case 9:  commitSPXAxis(.vertical)                // V
+            case 51: popLastSPXSegment()                     // Backspace — undo last
+            case 36, 76:                                     // Return / Enter
+                guard let last = spxCommitted.last else { return }
+                copySPXLengthToPasteboard(last.pxLength)
+            default: break
+            }
+        }
     }
 
     // MARK: Drawing
@@ -508,18 +520,20 @@ final class SelectionView: NSView {
         if let img = backgroundImage {
             spxAnalyzer = SPXAnalyzer(image: img)
         }
-        spxRectActive = false
-        spxRectStart = .zero
-        spxRectEnd = .zero
-        spxLastSnapped = .zero
+        spxLiveH = nil
+        spxLiveV = nil
+        spxCommitted.removeAll()
+        spxColorIndex = 0
         needsDisplay = true
     }
 
     func disableSPXMode() {
         isSPXMode = false
         spxAnalyzer = nil
-        spxRectActive = false
-        spxLastSnapped = .zero
+        spxLiveH = nil
+        spxLiveV = nil
+        spxCommitted.removeAll()
+        spxColorIndex = 0
         onSPXSizePicked = nil
     }
 
@@ -527,7 +541,7 @@ final class SelectionView: NSView {
 
     private var spxMinEdgeLength: Int {
         let stored = UserDefaults.standard.integer(forKey: "spxMinEdgeLength")
-        return stored > 0 ? stored : 16
+        return stored > 0 ? stored : 12
     }
 
     private func viewToImagePixel(_ p: NSPoint) -> (Int, Int)? {
@@ -540,17 +554,6 @@ final class SelectionView: NSView {
         return (px, py)
     }
 
-    private func imageRectToView(_ r: CGRect) -> NSRect {
-        guard let image = backgroundImage else { return .zero }
-        let sx = bounds.width / CGFloat(image.width)
-        let sy = bounds.height / CGFloat(image.height)
-        let x = r.minX * sx
-        let w = r.width * sx
-        let h = r.height * sy
-        let y = bounds.height - (r.minY + r.height) * sy
-        return NSRect(x: x, y: y, width: w, height: h)
-    }
-
     private func imagePixelToView(_ px: Int, _ py: Int) -> NSPoint {
         guard let image = backgroundImage else { return .zero }
         let sx = bounds.width / CGFloat(image.width)
@@ -558,146 +561,151 @@ final class SelectionView: NSView {
         return NSPoint(x: CGFloat(px) * sx, y: bounds.height - CGFloat(py) * sy)
     }
 
-    private func snapViewPoint(_ p: NSPoint, radius: Int) -> NSPoint {
-        guard let analyzer = spxAnalyzer, let (px, py) = viewToImagePixel(p) else { return p }
-        let (snapX, snapY) = analyzer.snapToEdge(near: px, py, radius: radius)
-        return imagePixelToView(snapX, snapY)
-    }
-
-    /// Converts a view-space rect (Y-up) to an image-space rect (Y-down).
-    private func viewRectToImageRect(_ r: NSRect) -> CGRect? {
-        guard let image = backgroundImage else { return nil }
-        let sx = CGFloat(image.width) / bounds.width
-        let sy = CGFloat(image.height) / bounds.height
-        let x = r.minX * sx
-        let w = r.width * sx
-        let yImage = (bounds.height - r.maxY) * sy
-        let h = r.height * sy
-        return CGRect(x: x, y: yImage, width: w, height: h)
-    }
-
-    /// Build a snapped view-space rect from drag start/end view-points by going
-    /// view → image → snap → image → view. Returns the raw rect if no analyzer.
-    private func snappedViewRect(start: NSPoint, end: NSPoint) -> NSRect {
-        let raw = NSRect(
-            x: min(start.x, end.x), y: min(start.y, end.y),
-            width: abs(end.x - start.x), height: abs(end.y - start.y)
-        )
+    /// Recomputes the live H/V segments at the current cursor by ray-casting in
+    /// the analyzer. Cheap — just two array scans.
+    private func recomputeSPXLiveSegments() {
         guard let analyzer = spxAnalyzer,
-              let imgRect = viewRectToImageRect(raw),
-              imgRect.width > 1, imgRect.height > 1 else { return raw }
-        let snapped = analyzer.snapRect(imgRect, tolerance: spxSnapTolerance, minRunLength: 8)
-        return imageRectToView(snapped)
-    }
-
-    /// Returns image-pixel size of the given view-space rect, rounded.
-    private func viewRectToImagePixelSize(_ r: NSRect) -> (w: Int, h: Int) {
-        guard let image = backgroundImage else {
-            return (Int(r.width.rounded()), Int(r.height.rounded()))
+              let (px, py) = viewToImagePixel(spxCursor) else {
+            spxLiveH = nil; spxLiveV = nil; return
         }
-        let sx = CGFloat(image.width) / bounds.width
-        let sy = CGFloat(image.height) / bounds.height
-        return (Int((r.width * sx).rounded()), Int((r.height * sy).rounded()))
+        if let h = analyzer.horizontalExtent(at: px, y: py, minEdgeLength: spxMinEdgeLength) {
+            let s = imagePixelToView(h.left, py)
+            let e = imagePixelToView(h.right, py)
+            spxLiveH = SPXLiveSegment(start: s, end: e, pxLength: h.right - h.left)
+        } else { spxLiveH = nil }
+        if let v = analyzer.verticalExtent(at: px, y: py, minEdgeLength: spxMinEdgeLength) {
+            let s = imagePixelToView(px, v.top)
+            let e = imagePixelToView(px, v.bottom)
+            spxLiveV = SPXLiveSegment(start: s, end: e, pxLength: v.bottom - v.top)
+        } else { spxLiveV = nil }
     }
 
-    private var spxSnapTolerance: Int {
-        let stored = UserDefaults.standard.integer(forKey: "spxSnapTolerance")
-        return stored > 0 ? stored : 18
+    private func commitSPXAxis(_ axis: SPXSegment.Axis) {
+        let live: SPXLiveSegment? = (axis == .horizontal) ? spxLiveH : spxLiveV
+        guard let seg = live, seg.pxLength > 1 else { return }
+        let color = SelectionView.spxPalette[spxColorIndex % SelectionView.spxPalette.count]
+        spxColorIndex += 1
+        spxCommitted.append(SPXSegment(axis: axis, start: seg.start, end: seg.end,
+                                       pxLength: seg.pxLength, color: color))
+        copySPXLengthToPasteboard(seg.pxLength)
+        needsDisplay = true
     }
+
+    private func popLastSPXSegment() {
+        guard !spxCommitted.isEmpty else { return }
+        spxCommitted.removeLast()
+        if spxColorIndex > 0 { spxColorIndex -= 1 }
+        needsDisplay = true
+    }
+
+    private func copySPXLengthToPasteboard(_ px: Int) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString("\(px) px", forType: .string)
+    }
+
+    // MARK: SPX drawing
 
     private func drawSPXHUD(context: CGContext) {
-        let hex = UserDefaults.standard.string(forKey: "highlightColorHex") ?? "FFD60A"
-        let highlightColor = NSColor(hex: hex)
-        let white = NSColor(deviceRed: 1, green: 1, blue: 1, alpha: 1).cgColor
+        // Background dim so colored lines pop on busy screens. Very subtle.
+        context.saveGState()
+        context.setFillColor(NSColor.black.withAlphaComponent(0.08).cgColor)
+        context.fill(bounds)
+        context.restoreGState()
 
-        if spxRectActive {
-            // Live: rubber-band rect that already snapped to detected edges.
-            drawSPXSelection(context: context, snapped: spxLastSnapped,
-                             color: highlightColor, textColor: white)
-        } else {
-            // Idle / hover: thin crosshair through the cursor.
-            drawSPXCrosshair(context: context, at: spxCursor)
+        // 1) Committed segments (persistent).
+        for seg in spxCommitted {
+            drawSPXSegmentLine(context: context, start: seg.start, end: seg.end,
+                               color: seg.color, label: "\(seg.pxLength)", strong: true)
+        }
+
+        // 2) Live preview lines through cursor — both H and V from edge to edge.
+        let hex = UserDefaults.standard.string(forKey: "highlightColorHex") ?? "FFD60A"
+        let liveColor = NSColor(hex: hex)
+        if let h = spxLiveH {
+            drawSPXSegmentLine(context: context, start: h.start, end: h.end,
+                               color: liveColor, label: "\(h.pxLength)", strong: false)
+        }
+        if let v = spxLiveV {
+            drawSPXSegmentLine(context: context, start: v.start, end: v.end,
+                               color: liveColor, label: "\(v.pxLength)", strong: false)
+        }
+
+        // Center dot at cursor for precision.
+        if spxCursor.x > 0 || spxCursor.y > 0 {
+            context.saveGState()
+            context.setFillColor(liveColor.cgColor)
+            let r: CGFloat = 2.5
+            context.fillEllipse(in: CGRect(x: spxCursor.x - r, y: spxCursor.y - r,
+                                           width: r * 2, height: r * 2))
+            context.restoreGState()
         }
     }
 
-    private func drawSPXCrosshair(context: CGContext, at p: NSPoint) {
-        guard p.x > 0 || p.y > 0 else { return }
+    /// Draws a measurement segment with perpendicular end caps and a pill label
+    /// near its midpoint. `strong` is for committed segments (thicker + opaque);
+    /// non-strong is for live preview (thinner + slightly translucent).
+    private func drawSPXSegmentLine(context: CGContext, start: NSPoint, end: NSPoint,
+                                    color: NSColor, label: String, strong: Bool) {
+        let isHorizontal = abs(end.y - start.y) < 0.5
+        let isVertical = abs(end.x - start.x) < 0.5
+        guard isHorizontal || isVertical else { return }
+
+        let alpha: CGFloat = strong ? 1.0 : 0.7
+        let lineW: CGFloat = strong ? 1.5 : 1.0
+        let drawColor = color.withAlphaComponent(alpha)
+
+        // Halo for legibility on busy backgrounds.
         context.saveGState()
-        context.setStrokeColor(NSColor(deviceRed: 1, green: 1, blue: 1, alpha: 0.28).cgColor)
-        context.setLineWidth(1.0)
-        // Sub-pixel offset so the hairline renders crisply on 1x and 2x.
-        let px = p.x.rounded() + 0.5
-        let py = p.y.rounded() + 0.5
-        context.move(to: NSPoint(x: 0, y: py))
-        context.addLine(to: NSPoint(x: bounds.width, y: py))
-        context.move(to: NSPoint(x: px, y: 0))
-        context.addLine(to: NSPoint(x: px, y: bounds.height))
+        context.setStrokeColor(NSColor.black.withAlphaComponent(strong ? 0.5 : 0.3).cgColor)
+        context.setLineWidth(lineW + 1.5)
+        context.move(to: start); context.addLine(to: end)
         context.strokePath()
         context.restoreGState()
-    }
 
-    private func drawSPXSelection(context: CGContext, snapped: NSRect, color: NSColor, textColor: CGColor) {
-        guard snapped.width >= 1, snapped.height >= 1 else { return }
+        // Main line.
+        drawColor.setStroke()
+        let line = NSBezierPath()
+        line.move(to: start); line.line(to: end)
+        line.lineWidth = lineW
+        line.stroke()
 
-        // Dim everything outside the snapped rect for focus (subtle).
-        context.saveGState()
-        context.setFillColor(NSColor.black.withAlphaComponent(0.18).cgColor)
-        context.fill(bounds)
-        context.setBlendMode(.destinationOut)
-        context.fill(snapped)
-        context.restoreGState()
-
-        // Outline: 1 px dark + 1 px highlight for crispness on any background.
-        let outer = NSBezierPath(rect: snapped.insetBy(dx: -1, dy: -1))
-        NSColor.black.withAlphaComponent(0.5).setStroke()
-        outer.lineWidth = 1.0; outer.stroke()
-        let inner = NSBezierPath(rect: snapped)
-        color.setStroke()
-        inner.lineWidth = 1.0; inner.stroke()
-
-        // Corner ticks — short marks at each corner, perpendicular to both sides.
-        let tick: CGFloat = 6
-        color.setStroke()
-        let corners: [(NSPoint, NSPoint, NSPoint, NSPoint)] = [
-            // (corner, horizontal-tick-end, corner, vertical-tick-end)
-            (NSPoint(x: snapped.minX, y: snapped.minY),
-             NSPoint(x: snapped.minX + tick, y: snapped.minY),
-             NSPoint(x: snapped.minX, y: snapped.minY),
-             NSPoint(x: snapped.minX, y: snapped.minY + tick)),
-            (NSPoint(x: snapped.maxX, y: snapped.minY),
-             NSPoint(x: snapped.maxX - tick, y: snapped.minY),
-             NSPoint(x: snapped.maxX, y: snapped.minY),
-             NSPoint(x: snapped.maxX, y: snapped.minY + tick)),
-            (NSPoint(x: snapped.minX, y: snapped.maxY),
-             NSPoint(x: snapped.minX + tick, y: snapped.maxY),
-             NSPoint(x: snapped.minX, y: snapped.maxY),
-             NSPoint(x: snapped.minX, y: snapped.maxY - tick)),
-            (NSPoint(x: snapped.maxX, y: snapped.maxY),
-             NSPoint(x: snapped.maxX - tick, y: snapped.maxY),
-             NSPoint(x: snapped.maxX, y: snapped.maxY),
-             NSPoint(x: snapped.maxX, y: snapped.maxY - tick))
-        ]
-        for c in corners {
-            let p = NSBezierPath()
-            p.move(to: c.0); p.line(to: c.1)
-            p.move(to: c.2); p.line(to: c.3)
-            p.lineWidth = 2.5
-            p.stroke()
+        // Perpendicular end caps (short tick marks marking each endpoint).
+        let cap: CGFloat = strong ? 5 : 4
+        let caps = NSBezierPath()
+        if isHorizontal {
+            caps.move(to: NSPoint(x: start.x, y: start.y - cap))
+            caps.line(to: NSPoint(x: start.x, y: start.y + cap))
+            caps.move(to: NSPoint(x: end.x,   y: end.y - cap))
+            caps.line(to: NSPoint(x: end.x,   y: end.y + cap))
+        } else {
+            caps.move(to: NSPoint(x: start.x - cap, y: start.y))
+            caps.line(to: NSPoint(x: start.x + cap, y: start.y))
+            caps.move(to: NSPoint(x: end.x - cap,   y: end.y))
+            caps.line(to: NSPoint(x: end.x + cap,   y: end.y))
         }
+        caps.lineWidth = lineW
+        caps.stroke()
 
-        // W × H label below the rect (or above if no room).
-        let pxDims = viewRectToImagePixelSize(snapped)
-        let label = "\(pxDims.w) × \(pxDims.h)"
-        let labelMid = NSPoint(x: snapped.midX, y: snapped.minY - 16)
-        let fallback = NSPoint(x: snapped.midX, y: snapped.maxY + 16)
-        let center = labelMid.y < 24 ? fallback : labelMid
-        drawSPXPill(context: context, near: center, text: label, textColor: textColor)
+        // Label pill — offset perpendicular to the line by ~10 px.
+        let mid = NSPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
+        let labelCenter: NSPoint
+        if isHorizontal {
+            labelCenter = NSPoint(x: mid.x, y: mid.y - 12)
+        } else {
+            labelCenter = NSPoint(x: mid.x + 22, y: mid.y)
+        }
+        let white = NSColor(deviceRed: 1, green: 1, blue: 1, alpha: 1).cgColor
+        drawSPXPill(context: context, near: labelCenter, text: label,
+                    textColor: white, bgColor: drawColor)
     }
 
-    private func drawSPXPill(context: CGContext, near center: NSPoint, text: String, textColor: CGColor) {
+    private func drawSPXPill(context: CGContext, near center: NSPoint, text: String,
+                             textColor: CGColor,
+                             bgColor: NSColor = NSColor(deviceRed: 0, green: 0, blue: 0, alpha: 0.82)) {
         let ctLine = SelectionView.makeCTLine(text, font: SelectionView.spxLabelFont, color: textColor)
         let lb = CTLineGetBoundsWithOptions(ctLine, [])
-        let hPad: CGFloat = 7, vPad: CGFloat = 4
+        let hPad: CGFloat = 6, vPad: CGFloat = 3
         let labelW = lb.width + hPad * 2
         let labelH = lb.height + vPad * 2
         var lx = center.x - labelW / 2
@@ -708,7 +716,7 @@ final class SelectionView: NSView {
         let bgRect = CGRect(x: lx, y: ly, width: labelW, height: labelH)
         context.saveGState()
         context.addPath(CGPath(roundedRect: bgRect, cornerWidth: 4, cornerHeight: 4, transform: nil))
-        context.setFillColor(NSColor(deviceRed: 0, green: 0, blue: 0, alpha: 0.82).cgColor)
+        context.setFillColor(bgColor.cgColor)
         context.fillPath()
         context.restoreGState()
 
