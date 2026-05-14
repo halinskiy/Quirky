@@ -850,23 +850,42 @@ final class SelectionView: NSView {
                    height: r.height * viewSY)
         }
 
-        // 1) Try element-bbox autodetect from the rubber-band center.
+        // 1) Element-bbox autodetect from the rubber-band center, cascading
+        // through several minRun values. Small/rounded UI (icon buttons,
+        // chips) has short straight edges, so the T-bound minRun often misses
+        // them. Try the user's T first, then progressively more permissive
+        // levels, and pick the SMALLEST qualifying bbox — that targets the
+        // innermost element the drag is centered on.
         let cx = Int(imgRect.midX.rounded())
         let cy = Int(imgRect.midY.rounded())
-        if let bbox = analyzer.elementBboxAt(x: cx, y: cy,
-                                             minEdgeLength: spxMinEdgeLength) {
-            // Accept only if the autodetected bbox sensibly overlaps the user's
-            // intent — i.e. the user's rect isn't trying to escape the element.
-            let userArea = imgRect.width * imgRect.height
+        let userArea = imgRect.width * imgRect.height
+        let runs: [Int] = [
+            spxMinEdgeLength,
+            max(8,  spxMinEdgeLength / 2),
+            max(4,  spxMinEdgeLength / 4),
+            max(2,  spxMinEdgeLength / 8)
+        ]
+        var bestBox: CGRect? = nil
+        var bestArea: CGFloat = .greatestFiniteMagnitude
+        for run in runs {
+            guard let bbox = analyzer.elementBboxAt(x: cx, y: cy,
+                                                    minEdgeLength: run) else { continue }
             let bboxArea = bbox.width * bbox.height
             let inter = imgRect.intersection(bbox)
             let interArea = max(0, inter.width * inter.height)
             let userCoverage = interArea / max(1, userArea)
-            let bboxFit = bboxArea / max(1, userArea * 8)  // bbox not >8× user
-            if userCoverage > 0.55, bboxFit <= 1.0 {
-                return toView(bbox)
+            // Accept any bbox that's plausibly the element the user is
+            // grabbing: substantial overlap, not absurdly larger than the
+            // drag, and not collapsed to a tiny fragment relative to it.
+            guard userCoverage > 0.45 else { continue }
+            guard bboxArea < userArea * 8 else { continue }
+            guard bboxArea > userArea * 0.08 else { continue }
+            if bboxArea < bestArea {
+                bestArea = bboxArea
+                bestBox = bbox
             }
         }
+        if let b = bestBox { return toView(b) }
 
         // 2) Per-edge snap fallback. Cap radius regardless of T.
         let snapTolerance = min(24, max(8, spxMinEdgeLength / 2))

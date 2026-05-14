@@ -59,6 +59,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlay.onSPXPreserveHide = { [weak self] in self?.handleSPXPreserveHide() }
     }
 
+    /// True while SPX is the active capture mode (opaque or ghost). Used by
+    /// the event tap to decide whether to swallow Esc system-wide.
+    fileprivate func shouldInterceptEscape() -> Bool {
+        isCapturing && currentMode == .spx
+    }
+
+    /// Tap-level Esc dispatcher — closes the overlay and wipes preserved
+    /// segments, mirroring the view's keyDown handler. Reachable even when
+    /// the overlay is in ghost mode (not the key window).
+    fileprivate func handleEscapeWhileSPXActive() {
+        overlay.dismiss()
+        cancelCapture()
+        updateStatusLabel(nil)
+    }
+
     /// Called when SPX is dismissed via click — overlay closes but the segments
     /// remain in memory. Reset capture state so the next hotkey re-enters SPX.
     private func handleSPXPreserveHide() {
@@ -187,6 +202,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let hasExtra = !flags.intersection([.maskControl, .maskAlternate]).isEmpty
                 if hasCmd && hasShift && !hasExtra && keyCode == 18 {
                     DispatchQueue.main.async { app.handleCaptureHotkey() }
+                    return nil
+                }
+                // Esc while SPX is active — swallow it system-wide so the
+                // ghost overlay can exit even though it's not the key window
+                // (and so opaque-mode Esc never leaks to the app underneath).
+                if !hasCmd && !hasShift && !hasExtra && keyCode == 53 && app.shouldInterceptEscape() {
+                    DispatchQueue.main.async { app.handleEscapeWhileSPXActive() }
                     return nil
                 }
                 return Unmanaged.passUnretained(event)
