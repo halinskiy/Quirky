@@ -364,20 +364,34 @@ final class SPXAnalyzer {
 
         let t = edgeThreshold
         let w = width
+        // Allow up to gapTol consecutive sub-threshold pixels inside a run.
+        // Soft edges (anti-aliased rounded card borders) have minor dips that
+        // would otherwise break the run into useless fragments.
+        let gapTol = 2
 
         // Vertical runs — scan each column top-to-bottom.
         for x in 0..<width {
             var y = 0
             while y < height {
-                if grad[y * w + x] >= t {
-                    var endY = y
-                    while endY < height && grad[endY * w + x] >= t { endY += 1 }
-                    let runLen = UInt8(min(255, endY - y))
-                    for i in y..<endY { v[i * w + x] = runLen }
-                    y = endY
-                } else {
-                    y += 1
+                if grad[y * w + x] < t { y += 1; continue }
+                var endY = y + 1
+                var gap = 0
+                while endY < height {
+                    if grad[endY * w + x] >= t {
+                        endY += 1; gap = 0
+                    } else if gap < gapTol {
+                        endY += 1; gap += 1
+                    } else {
+                        break
+                    }
                 }
+                // Trim trailing gap pixels so the run ends on an edge pixel.
+                let runEnd = endY - gap
+                if runEnd > y {
+                    let runLen = UInt8(min(255, runEnd - y))
+                    for i in y..<runEnd { v[i * w + x] = runLen }
+                }
+                y = max(y + 1, runEnd)
             }
         }
 
@@ -386,15 +400,24 @@ final class SPXAnalyzer {
             let row = y * w
             var x = 0
             while x < width {
-                if grad[row + x] >= t {
-                    var endX = x
-                    while endX < width && grad[row + endX] >= t { endX += 1 }
-                    let runLen = UInt8(min(255, endX - x))
-                    for i in x..<endX { h[row + i] = runLen }
-                    x = endX
-                } else {
-                    x += 1
+                if grad[row + x] < t { x += 1; continue }
+                var endX = x + 1
+                var gap = 0
+                while endX < width {
+                    if grad[row + endX] >= t {
+                        endX += 1; gap = 0
+                    } else if gap < gapTol {
+                        endX += 1; gap += 1
+                    } else {
+                        break
+                    }
                 }
+                let runEnd = endX - gap
+                if runEnd > x {
+                    let runLen = UInt8(min(255, runEnd - x))
+                    for i in x..<runEnd { h[row + i] = runLen }
+                }
+                x = max(x + 1, runEnd)
             }
         }
 

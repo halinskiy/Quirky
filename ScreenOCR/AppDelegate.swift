@@ -37,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var eventTap: CFMachPort?
     private var isCapturing = false
     private var currentMode: CaptureMode = .ocr
+    private var spxResumePending = false  // true while SPX is hidden-but-preserved
     private var previousApp: NSRunningApplication?
     private var preCapturedImages: [(displayID: CGDirectDisplayID, bounds: CGRect, image: CGImage)] = []
 
@@ -54,6 +55,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !PermissionManager.hasScreenRecordingPermission { PermissionManager.requestScreenRecordingPermission() }
         if !PermissionManager.hasAccessibilityPermission { PermissionManager.requestAccessibilityPermission() }
         installEventTap()
+        overlay.onSPXPreserveHide = { [weak self] in self?.handleSPXPreserveHide() }
+    }
+
+    /// Called when SPX is dismissed via click — overlay closes but the segments
+    /// remain in memory. Reset capture state so the next hotkey re-enters SPX.
+    private func handleSPXPreserveHide() {
+        isCapturing = false
+        spxResumePending = true
+        updateStatusLabel(nil)
+        smartReturnFocus()
     }
 
     // MARK: Status Item & Menu
@@ -198,7 +209,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if isCapturing {
             cycleMode()
         } else {
-            currentMode = EnabledModesStore.load().first ?? .ocr
+            // If SPX is hidden-but-preserved, the hotkey resumes it directly
+            // instead of starting fresh from the first enabled mode.
+            currentMode = spxResumePending ? .spx : (EnabledModesStore.load().first ?? .ocr)
             startCapture()
         }
     }
@@ -341,6 +354,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func cancelCapture() {
         isCapturing = false
+        spxResumePending = false  // Esc / mode-switch wipes preserved SPX
         preCapturedImages = []
         smartReturnFocus()
     }

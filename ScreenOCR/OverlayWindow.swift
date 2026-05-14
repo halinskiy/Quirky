@@ -56,6 +56,9 @@ final class SelectionView: NSView {
     fileprivate var spxCommitted: [SPXSegment] = []
     fileprivate var spxColorIndex: Int = 0
     private var spxToleranceIndex: Int = 3
+    private var spxDragOrigin: NSPoint = .zero
+    private var spxIsDragging: Bool = false
+    private var spxLiveDragRect: NSRect = .zero  // snapped, in view coords
 
     fileprivate struct SPXTolerance {
         let edgeThreshold: UInt8   // gradient strength — lower catches softer edges
@@ -66,12 +69,13 @@ final class SelectionView: NSView {
     /// run-length bar (lines pass through text and small UI).
     fileprivate static let spxToleranceLevels: [SPXTolerance] = [
         SPXTolerance(edgeThreshold: 40, minRun: 4),
-        SPXTolerance(edgeThreshold: 32, minRun: 8),
-        SPXTolerance(edgeThreshold: 24, minRun: 14),
-        SPXTolerance(edgeThreshold: 18, minRun: 24),   // default
-        SPXTolerance(edgeThreshold: 12, minRun: 40),
-        SPXTolerance(edgeThreshold:  7, minRun: 64),
-        SPXTolerance(edgeThreshold:  4, minRun: 100)
+        SPXTolerance(edgeThreshold: 30, minRun: 8),
+        SPXTolerance(edgeThreshold: 22, minRun: 14),
+        SPXTolerance(edgeThreshold: 16, minRun: 22),   // default
+        SPXTolerance(edgeThreshold: 10, minRun: 36),
+        SPXTolerance(edgeThreshold:  6, minRun: 60),
+        SPXTolerance(edgeThreshold:  3, minRun: 100),
+        SPXTolerance(edgeThreshold:  2, minRun: 160)
     ]
 
     fileprivate struct SPXLiveSegment {
@@ -80,12 +84,17 @@ final class SelectionView: NSView {
         let pxLength: Int        // image pixels, real device pixels
     }
     fileprivate struct SPXSegment {
-        enum Axis { case horizontal, vertical }
+        enum Axis { case horizontal, vertical, rect }
         let axis: Axis
-        let start: NSPoint
-        let end: NSPoint
-        let pxLength: Int
+        let start: NSPoint       // line: endpoint A; rect: top-left in view coords
+        let end: NSPoint         // line: endpoint B; rect: bottom-right
+        let pxLength: Int        // line: length; rect: width
+        let pxHeight: Int        // line: 0; rect: height
         let color: NSColor
+
+        var label: String {
+            axis == .rect ? "\(pxLength)×\(pxHeight)" : "\(pxLength)"
+        }
     }
     fileprivate static let spxPalette: [NSColor] = [
         NSColor(deviceRed: 1.00, green: 0.84, blue: 0.04, alpha: 1), // yellow
@@ -172,9 +181,10 @@ final class SelectionView: NSView {
         let point = convert(event.locationInWindow, from: nil)
         startPoint = point
         if isSPXMode {
-            // Click hides the overlay but preserves committed segments. Re-opening
-            // SPX restores them. Esc is the explicit "exit & wipe" gesture.
-            onSPXHide?()
+            spxDragOrigin = point
+            spxIsDragging = false
+            spxLiveDragRect = .zero
+            spxCursor = point
             return
         }
         selectionRect = .zero
@@ -212,7 +222,14 @@ final class SelectionView: NSView {
         }
         if isSPXMode {
             spxCursor = current
-            recomputeSPXLiveSegments()
+            if !spxIsDragging && hypot(current.x - spxDragOrigin.x, current.y - spxDragOrigin.y) > 3 {
+                spxIsDragging = true
+            }
+            if spxIsDragging {
+                spxLiveDragRect = snappedDragRect(start: spxDragOrigin, end: current)
+            } else {
+                recomputeSPXLiveSegments()
+            }
             needsDisplay = true
             return
         }
@@ -264,7 +281,16 @@ final class SelectionView: NSView {
             return
         }
         if isSPXMode {
-            // mouseDown already committed; mouseUp is a no-op so the overlay stays open.
+            if spxIsDragging {
+                commitSPXRect(spxLiveDragRect)
+                spxIsDragging = false
+                spxLiveDragRect = .zero
+                recomputeSPXLiveSegments()
+                needsDisplay = true
+            } else {
+                // Simple click → hide preserving state.
+                onSPXHide?()
+            }
             return
         }
         guard isSelecting else { return }
@@ -632,8 +658,59 @@ final class SelectionView: NSView {
         let color = SelectionView.spxPalette[spxColorIndex % SelectionView.spxPalette.count]
         spxColorIndex += 1
         spxCommitted.append(SPXSegment(axis: axis, start: seg.start, end: seg.end,
-                                       pxLength: seg.pxLength, color: color))
+                                       pxLength: seg.pxLength, pxHeight: 0, color: color))
         copySPXLengthToPasteboard(seg.pxLength)
+        needsDisplay = true
+    }
+
+    /// Snap each edge of a view-space rect to the nearest detected edge in the
+    /// analyzer. Returns the original rect if no analyzer / out-of-bounds.
+    private func snappedDragRect(start: NSPoint, end: NSPoint) -> NSRect {
+        let raw = NSRect(
+            x: min(start.x, end.x), y: min(start.y, end.y),
+            width: abs(end.x - start.x), height: abs(end.y - start.y)
+        )
+        guard let analyzer = spxAnalyzer,
+              let image = backgroundImage,
+              raw.width > 1, raw.height > 1 else { return raw }
+        let sx = CGFloat(image.width) / bounds.width
+        let sy = CGFloat(image.height) / bounds.height
+        let imgRect = CGRect(
+            x: raw.minX * sx,
+            y: (bounds.height - raw.maxY) * sy,
+            width: raw.width * sx,
+            height: raw.height * sy
+        )
+        let snapped = analyzer.snapRect(imgRect,
+                                        tolerance: max(12, spxMinEdgeLength),
+                                        minRunLength: spxMinEdgeLength)
+        let viewSX = bounds.width / CGFloat(image.width)
+        let viewSY = bounds.height / CGFloat(image.height)
+        return NSRect(
+            x: snapped.minX * viewSX,
+            y: bounds.height - (snapped.minY + snapped.height) * viewSY,
+            width: snapped.width * viewSX,
+            height: snapped.height * viewSY
+        )
+    }
+
+    private func commitSPXRect(_ rect: NSRect) {
+        guard let image = backgroundImage, rect.width > 2, rect.height > 2 else { return }
+        let sx = CGFloat(image.width) / bounds.width
+        let sy = CGFloat(image.height) / bounds.height
+        let pxW = Int((rect.width * sx).rounded())
+        let pxH = Int((rect.height * sy).rounded())
+        let color = SelectionView.spxPalette[spxColorIndex % SelectionView.spxPalette.count]
+        spxColorIndex += 1
+        spxCommitted.append(SPXSegment(
+            axis: .rect,
+            start: NSPoint(x: rect.minX, y: rect.minY),
+            end: NSPoint(x: rect.maxX, y: rect.maxY),
+            pxLength: pxW, pxHeight: pxH, color: color
+        ))
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString("\(pxW) × \(pxH) px", forType: .string)
         needsDisplay = true
     }
 
@@ -661,20 +738,39 @@ final class SelectionView: NSView {
 
         // 1) Committed segments (persistent).
         for seg in spxCommitted {
-            drawSPXSegmentLine(context: context, start: seg.start, end: seg.end,
-                               color: seg.color, label: "\(seg.pxLength)", strong: true)
+            if seg.axis == .rect {
+                let r = NSRect(x: seg.start.x, y: seg.start.y,
+                               width: seg.end.x - seg.start.x,
+                               height: seg.end.y - seg.start.y)
+                drawSPXRect(context: context, rect: r, color: seg.color,
+                            label: seg.label, strong: true)
+            } else {
+                drawSPXSegmentLine(context: context, start: seg.start, end: seg.end,
+                                   color: seg.color, label: seg.label, strong: true)
+            }
         }
 
-        // 2) Live preview lines through cursor — both H and V from edge to edge.
         let hex = UserDefaults.standard.string(forKey: "highlightColorHex") ?? "FFD60A"
         let liveColor = NSColor(hex: hex)
-        if let h = spxLiveH {
-            drawSPXSegmentLine(context: context, start: h.start, end: h.end,
-                               color: liveColor, label: "\(h.pxLength)", strong: false)
-        }
-        if let v = spxLiveV {
-            drawSPXSegmentLine(context: context, start: v.start, end: v.end,
-                               color: liveColor, label: "\(v.pxLength)", strong: false)
+
+        // 2) Live preview: either drag-rect (during mouseDragged) or H/V crosshair.
+        if spxIsDragging && spxLiveDragRect.width > 1 && spxLiveDragRect.height > 1 {
+            let pxW: Int, pxH: Int
+            if let image = backgroundImage {
+                pxW = Int((spxLiveDragRect.width * CGFloat(image.width) / bounds.width).rounded())
+                pxH = Int((spxLiveDragRect.height * CGFloat(image.height) / bounds.height).rounded())
+            } else { pxW = Int(spxLiveDragRect.width); pxH = Int(spxLiveDragRect.height) }
+            drawSPXRect(context: context, rect: spxLiveDragRect, color: liveColor,
+                        label: "\(pxW)×\(pxH)", strong: false)
+        } else {
+            if let h = spxLiveH {
+                drawSPXSegmentLine(context: context, start: h.start, end: h.end,
+                                   color: liveColor, label: "\(h.pxLength)", strong: false)
+            }
+            if let v = spxLiveV {
+                drawSPXSegmentLine(context: context, start: v.start, end: v.end,
+                                   color: liveColor, label: "\(v.pxLength)", strong: false)
+            }
         }
 
         // Center dot at cursor for precision.
@@ -688,6 +784,55 @@ final class SelectionView: NSView {
         }
 
         drawSPXToleranceChip(context: context)
+    }
+
+    /// Draws an outlined rectangle measurement with a "W×H" pill anchored at
+    /// the top-left of the rect. Committed rects are strong; live drag is thin.
+    private func drawSPXRect(context: CGContext, rect: NSRect, color: NSColor,
+                             label: String, strong: Bool) {
+        guard rect.width >= 1, rect.height >= 1 else { return }
+        let alpha: CGFloat = strong ? 1.0 : 0.7
+        let lineW: CGFloat = strong ? 1.5 : 1.0
+        let drawColor = color.withAlphaComponent(alpha)
+
+        // Halo for legibility.
+        context.saveGState()
+        context.setStrokeColor(NSColor.black.withAlphaComponent(strong ? 0.5 : 0.3).cgColor)
+        context.setLineWidth(lineW + 1.5)
+        context.stroke(rect.insetBy(dx: -0.5, dy: -0.5))
+        context.restoreGState()
+
+        // Outline.
+        drawColor.setStroke()
+        let path = NSBezierPath(rect: rect)
+        path.lineWidth = lineW
+        path.stroke()
+
+        // Corner ticks for a measurement-tool feel.
+        let tick: CGFloat = strong ? 6 : 4
+        let caps = NSBezierPath()
+        let cs = [rect.origin,
+                  NSPoint(x: rect.maxX, y: rect.minY),
+                  NSPoint(x: rect.minX, y: rect.maxY),
+                  NSPoint(x: rect.maxX, y: rect.maxY)]
+        for c in cs {
+            // Just two small ticks perpendicular at each corner.
+            caps.move(to: NSPoint(x: c.x - tick, y: c.y)); caps.line(to: NSPoint(x: c.x + tick, y: c.y))
+            caps.move(to: NSPoint(x: c.x, y: c.y - tick)); caps.line(to: NSPoint(x: c.x, y: c.y + tick))
+        }
+        caps.lineWidth = lineW
+        caps.stroke()
+
+        // Label below the rect, or above if no room.
+        let labelCenter: NSPoint
+        if rect.minY > 22 {
+            labelCenter = NSPoint(x: rect.midX, y: rect.minY - 12)
+        } else {
+            labelCenter = NSPoint(x: rect.midX, y: rect.maxY + 12)
+        }
+        let white = NSColor(deviceRed: 1, green: 1, blue: 1, alpha: 1).cgColor
+        drawSPXPill(context: context, near: labelCenter, text: label,
+                    textColor: white, bgColor: drawColor)
     }
 
     /// Top-right chip: "T  ▮▮▮▯▯  12 px" — visualizes the current tolerance level.
@@ -953,6 +1098,9 @@ final class OverlayWindow {
     // Wiped by dismiss() (Esc / mode switch / final pick).
     fileprivate var spxPreservedSegments: [SelectionView.SPXSegment] = []
     fileprivate var spxPreservedColorIndex: Int = 0
+    /// AppDelegate hooks this to reset its capture-state machine when the user
+    /// clicks to dismiss SPX while keeping segments alive.
+    var onSPXPreserveHide: (() -> Void)?
 
     // MARK: Show methods
 
@@ -1080,6 +1228,7 @@ final class OverlayWindow {
         for window in windows { window.orderOut(nil) }
         NSCursor.arrow.set()
         windows.removeAll()
+        onSPXPreserveHide?()
     }
 
     /// Restore preserved SPX segments into a freshly-shown view. No-op when no
