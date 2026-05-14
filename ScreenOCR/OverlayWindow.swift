@@ -58,7 +58,13 @@ final class SelectionView: NSView {
     private var spxToleranceIndex: Int = 2
     private var spxDragOrigin: NSPoint = .zero
     private var spxIsDragging: Bool = false
-    private var spxLiveDragRect: NSRect = .zero  // snapped, in view coords
+    private var spxLiveDragRect: NSRect = .zero  // raw during drag; lerped during snap-on-release
+    private var spxIsSnapAnimating: Bool = false
+    private var spxSnapAnimTimer: Timer?
+    private var spxSnapAnimFrom: NSRect = .zero
+    private var spxSnapAnimTo: NSRect = .zero
+    private var spxSnapAnimStart: Date = .distantPast
+    private let spxSnapAnimDuration: TimeInterval = 0.18
     var spxIsGhost: Bool = false                  // OverlayWindow flips this via setSPXGhost
 
     /// Identifies a draggable handle on a committed segment.
@@ -359,7 +365,15 @@ final class SelectionView: NSView {
                 spxIsDragging = true
             }
             if spxIsDragging {
-                spxLiveDragRect = snappedDragRect(start: spxDragOrigin, end: current)
+                // Free drag — no snapping while the button is held. The rect
+                // follows the cursor exactly. Magnetic snap is animated on
+                // release in mouseUp.
+                spxLiveDragRect = NSRect(
+                    x: min(spxDragOrigin.x, current.x),
+                    y: min(spxDragOrigin.y, current.y),
+                    width: abs(current.x - spxDragOrigin.x),
+                    height: abs(current.y - spxDragOrigin.y)
+                )
             } else {
                 recomputeSPXLiveSegments()
             }
@@ -423,11 +437,30 @@ final class SelectionView: NSView {
                 return
             }
             if spxIsDragging {
-                commitSPXRect(spxLiveDragRect)
+                let current = convert(event.locationInWindow, from: nil)
+                let raw = NSRect(
+                    x: min(spxDragOrigin.x, current.x),
+                    y: min(spxDragOrigin.y, current.y),
+                    width: abs(current.x - spxDragOrigin.x),
+                    height: abs(current.y - spxDragOrigin.y)
+                )
                 spxIsDragging = false
-                spxLiveDragRect = .zero
-                recomputeSPXLiveSegments()
-                needsDisplay = true
+                let target = snappedDragRect(start: spxDragOrigin, end: current)
+                if rectsApproximatelyEqual(raw, target) {
+                    commitSPXRect(raw)
+                    spxLiveDragRect = .zero
+                    recomputeSPXLiveSegments()
+                    needsDisplay = true
+                } else {
+                    spxLiveDragRect = raw
+                    animateSPXSnap(from: raw, to: target) { [weak self] in
+                        guard let self else { return }
+                        self.commitSPXRect(target)
+                        self.spxLiveDragRect = .zero
+                        self.recomputeSPXLiveSegments()
+                        self.needsDisplay = true
+                    }
+                }
             }
             // A bare click is intentionally a no-op — Esc is the only exit.
             return
@@ -744,6 +777,10 @@ final class SelectionView: NSView {
         spxIsGhost = false
         spxHoveredHandle = nil
         spxActiveHandle = nil
+        spxSnapAnimTimer?.invalidate()
+        spxSnapAnimTimer = nil
+        spxIsSnapAnimating = false
+        spxLiveDragRect = .zero
         onSPXSizePicked = nil
     }
 
@@ -894,6 +931,48 @@ final class SelectionView: NSView {
         return toView(snapped)
     }
 
+    private func rectsApproximatelyEqual(_ a: NSRect, _ b: NSRect, tol: CGFloat = 1.0) -> Bool {
+        abs(a.minX - b.minX) < tol && abs(a.minY - b.minY) < tol
+            && abs(a.width  - b.width)  < tol
+            && abs(a.height - b.height) < tol
+    }
+
+    /// Smoothly lerps spxLiveDragRect from `from` to `to` over ~180 ms with an
+    /// ease-out cubic, then invokes `completion` on the main thread. Cancels
+    /// any in-flight snap animation.
+    private func animateSPXSnap(from: NSRect, to: NSRect, completion: @escaping () -> Void) {
+        spxSnapAnimTimer?.invalidate()
+        spxSnapAnimTimer = nil
+        spxSnapAnimFrom = from
+        spxSnapAnimTo = to
+        spxSnapAnimStart = Date()
+        spxIsSnapAnimating = true
+        let duration = spxSnapAnimDuration
+        let t = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            let now = Date().timeIntervalSince(self.spxSnapAnimStart)
+            let p = min(1.0, max(0.0, now / duration))
+            let eased = 1.0 - pow(1.0 - p, 3)            // ease-out cubic
+            let f = self.spxSnapAnimFrom
+            let g = self.spxSnapAnimTo
+            self.spxLiveDragRect = NSRect(
+                x: f.minX + (g.minX - f.minX) * CGFloat(eased),
+                y: f.minY + (g.minY - f.minY) * CGFloat(eased),
+                width:  f.width  + (g.width  - f.width)  * CGFloat(eased),
+                height: f.height + (g.height - f.height) * CGFloat(eased)
+            )
+            self.needsDisplay = true
+            if p >= 1.0 {
+                timer.invalidate()
+                self.spxSnapAnimTimer = nil
+                self.spxIsSnapAnimating = false
+                completion()
+            }
+        }
+        spxSnapAnimTimer = t
+        RunLoop.current.add(t, forMode: .common)
+    }
+
     private func commitSPXRect(_ rect: NSRect) {
         guard let image = backgroundImage, rect.width > 2, rect.height > 2 else { return }
         let sx = CGFloat(image.width) / bounds.width
@@ -964,7 +1043,7 @@ final class SelectionView: NSView {
 
         // 2) Live preview & crosshair — only in interactive mode.
         if !ghost {
-            if spxIsDragging && spxLiveDragRect.width > 1 && spxLiveDragRect.height > 1 {
+            if (spxIsDragging || spxIsSnapAnimating) && spxLiveDragRect.width > 1 && spxLiveDragRect.height > 1 {
                 let pxW: Int, pxH: Int
                 if let image = backgroundImage {
                     pxW = Int((spxLiveDragRect.width * CGFloat(image.width) / bounds.width).rounded())
