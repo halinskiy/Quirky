@@ -819,8 +819,10 @@ final class SelectionView: NSView {
         needsDisplay = true
     }
 
-    /// Snap each edge of a view-space rect to the nearest detected edge in the
-    /// analyzer. Returns the original rect if no analyzer / out-of-bounds.
+    /// During a drag, the user picks "anywhere inside the element". We then
+    /// (1) probe the element bbox around the center of the rubber-band, and
+    /// (2) if that bbox overlaps the user's rect, use it. Otherwise we fall
+    /// back to per-edge snap of the user's drawn rect.
     private func snappedDragRect(start: NSPoint, end: NSPoint) -> NSRect {
         let raw = NSRect(
             x: min(start.x, end.x), y: min(start.y, end.y),
@@ -829,6 +831,7 @@ final class SelectionView: NSView {
         guard let analyzer = spxAnalyzer,
               let image = backgroundImage,
               raw.width > 1, raw.height > 1 else { return raw }
+
         let sx = CGFloat(image.width) / bounds.width
         let sy = CGFloat(image.height) / bounds.height
         let imgRect = CGRect(
@@ -837,21 +840,40 @@ final class SelectionView: NSView {
             width: raw.width * sx,
             height: raw.height * sy
         )
-        // Cap snap tolerance regardless of T so the rect never jumps far from
-        // where the user dragged. minRun stays bound to T (controls what
-        // qualifies as an edge), but the search radius is bounded.
+        let viewSX = bounds.width / CGFloat(image.width)
+        let viewSY = bounds.height / CGFloat(image.height)
+
+        @inline(__always) func toView(_ r: CGRect) -> NSRect {
+            NSRect(x: r.minX * viewSX,
+                   y: bounds.height - (r.minY + r.height) * viewSY,
+                   width: r.width * viewSX,
+                   height: r.height * viewSY)
+        }
+
+        // 1) Try element-bbox autodetect from the rubber-band center.
+        let cx = Int(imgRect.midX.rounded())
+        let cy = Int(imgRect.midY.rounded())
+        if let bbox = analyzer.elementBboxAt(x: cx, y: cy,
+                                             minEdgeLength: spxMinEdgeLength) {
+            // Accept only if the autodetected bbox sensibly overlaps the user's
+            // intent — i.e. the user's rect isn't trying to escape the element.
+            let userArea = imgRect.width * imgRect.height
+            let bboxArea = bbox.width * bbox.height
+            let inter = imgRect.intersection(bbox)
+            let interArea = max(0, inter.width * inter.height)
+            let userCoverage = interArea / max(1, userArea)
+            let bboxFit = bboxArea / max(1, userArea * 8)  // bbox not >8× user
+            if userCoverage > 0.55, bboxFit <= 1.0 {
+                return toView(bbox)
+            }
+        }
+
+        // 2) Per-edge snap fallback. Cap radius regardless of T.
         let snapTolerance = min(24, max(8, spxMinEdgeLength / 2))
         let snapped = analyzer.snapRect(imgRect,
                                         tolerance: snapTolerance,
                                         minRunLength: spxMinEdgeLength)
-        let viewSX = bounds.width / CGFloat(image.width)
-        let viewSY = bounds.height / CGFloat(image.height)
-        return NSRect(
-            x: snapped.minX * viewSX,
-            y: bounds.height - (snapped.minY + snapped.height) * viewSY,
-            width: snapped.width * viewSX,
-            height: snapped.height * viewSY
-        )
+        return toView(snapped)
     }
 
     private func commitSPXRect(_ rect: NSRect) {
@@ -967,24 +989,27 @@ final class SelectionView: NSView {
                              drawHandles: Bool, hoveredHandle: Int?, activeHandle: Int?) {
         guard rect.width >= 1, rect.height >= 1 else { return }
         let drawColor = color.withAlphaComponent(alpha)
-        let radius: CGFloat = min(8, min(rect.width, rect.height) / 4)
 
-        // Halo for legibility.
+        // Translucent interior fill in the same hue.
+        context.saveGState()
+        context.setFillColor(color.withAlphaComponent(0.18 * alpha).cgColor)
+        context.fill(rect)
+        context.restoreGState()
+
+        // Halo for outline legibility on busy backgrounds.
         context.saveGState()
         context.setStrokeColor(NSColor.black.withAlphaComponent(0.4 * alpha).cgColor)
         context.setLineWidth(lineW + 1.5)
-        context.setLineJoin(.round)
-        context.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
-        context.strokePath()
+        context.setLineJoin(.miter)
+        context.stroke(rect)
         context.restoreGState()
 
-        // Main rounded outline.
+        // Main square outline.
         context.saveGState()
         context.setStrokeColor(drawColor.cgColor)
         context.setLineWidth(lineW)
-        context.setLineJoin(.round)
-        context.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
-        context.strokePath()
+        context.setLineJoin(.miter)
+        context.stroke(rect)
         context.restoreGState()
 
         // Corner handles (TL, TR, BL, BR).
