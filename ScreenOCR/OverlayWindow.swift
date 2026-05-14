@@ -74,22 +74,21 @@ final class SelectionView: NSView {
         let edgeThreshold: UInt8   // gradient strength — lower catches softer edges
         let minRun: Int            // perpendicular run length to qualify as an edge
     }
-    /// 7 steps from "only sharp short edges" to "soft window-scale borders".
-    /// Higher T lowers the gradient bar (softer borders qualify) AND raises the
-    /// run-length bar (lines pass through text and small UI).
-    /// Monotonic "permissiveness". T1 catches only large, hard boundaries
-    /// (windows, panels, big buttons) — both gradient and run-length bars are
-    /// high. Each step lowers both bars, so by T8 even short text-stroke edges
-    /// and faint anti-aliased borders qualify.
+    /// 8 monotonic steps. Edge-pixel threshold is kept low (6) at every level
+    /// so faint anti-aliased borders (icon-button strokes, low-contrast cards)
+    /// always make it into the run-length map. T controls only minRun — the
+    /// minimum length of contiguous edge a ray will stop at — so the slider
+    /// is really "ignore objects smaller than N pixels". T1 = window-scale
+    /// only; T8 = catch even single-character glyphs.
     fileprivate static let spxToleranceLevels: [SPXTolerance] = [
-        SPXTolerance(edgeThreshold: 50, minRun: 80),
-        SPXTolerance(edgeThreshold: 38, minRun: 50),
-        SPXTolerance(edgeThreshold: 28, minRun: 30),   // default
-        SPXTolerance(edgeThreshold: 20, minRun: 18),
-        SPXTolerance(edgeThreshold: 14, minRun: 10),
-        SPXTolerance(edgeThreshold:  9, minRun: 6),
-        SPXTolerance(edgeThreshold:  5, minRun: 3),
-        SPXTolerance(edgeThreshold:  2, minRun: 2)
+        SPXTolerance(edgeThreshold: 6, minRun: 80),
+        SPXTolerance(edgeThreshold: 6, minRun: 50),
+        SPXTolerance(edgeThreshold: 6, minRun: 30),    // default
+        SPXTolerance(edgeThreshold: 6, minRun: 18),
+        SPXTolerance(edgeThreshold: 6, minRun: 10),
+        SPXTolerance(edgeThreshold: 6, minRun:  6),
+        SPXTolerance(edgeThreshold: 5, minRun:  3),
+        SPXTolerance(edgeThreshold: 4, minRun:  2)
     ]
 
     fileprivate struct SPXLiveSegment {
