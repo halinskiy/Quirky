@@ -115,6 +115,117 @@ final class SPXAnalyzer {
         return CGRect(x: left, y: top, width: wOut, height: hOut)
     }
 
+    // MARK: - Rect snap (drag a frame → snap each edge to detected edges)
+
+    /// Given a user-drawn rectangle in image pixels, snap each edge to the
+    /// strongest nearby edge in a perpendicular band of width `2*tolerance`.
+    /// The score for a candidate row/column is the number of pixels along the
+    /// rect's opposite axis whose run-length is at least `minRunLength` — this
+    /// prefers long, continuous edges (window/card borders) over short ones
+    /// (text strokes).
+    ///
+    /// If the best candidate's score is below `minAcceptableFraction` of the
+    /// edge length, that edge isn't snapped (keeps the user's intent in
+    /// edge-poor regions).
+    func snapRect(_ rect: CGRect,
+                  tolerance: Int = 18,
+                  minRunLength: Int = 8,
+                  minAcceptableFraction: Double = 0.12) -> CGRect {
+        if vRunLen == nil || hRunLen == nil { buildRunMaps() }
+        guard let v = vRunLen, let h = hRunLen else { return rect }
+
+        let xMin = max(0, min(width - 1, Int(rect.minX.rounded())))
+        let xMax = max(0, min(width - 1, Int(rect.maxX.rounded())))
+        let yMin = max(0, min(height - 1, Int(rect.minY.rounded())))
+        let yMax = max(0, min(height - 1, Int(rect.maxY.rounded())))
+        guard xMax > xMin + 1, yMax > yMin + 1 else { return rect }
+
+        let minRun = UInt8(min(255, max(1, minRunLength)))
+        let w = width
+
+        let edgeLenX = xMax - xMin + 1
+        let edgeLenY = yMax - yMin + 1
+        let minHScore = max(2, Int(Double(edgeLenX) * minAcceptableFraction))
+        let minVScore = max(2, Int(Double(edgeLenY) * minAcceptableFraction))
+
+        @inline(__always) func scoreRow(_ y: Int) -> Int {
+            let row = y * w
+            var s = 0
+            for x in xMin...xMax where h[row + x] >= minRun { s += 1 }
+            return s
+        }
+        @inline(__always) func scoreCol(_ x: Int) -> Int {
+            var s = 0
+            for y in yMin...yMax where v[y * w + x] >= minRun { s += 1 }
+            return s
+        }
+
+        // Snap top: search [yMin - tol, yMin + tol], prefer rows closer to the user's edge on ties.
+        var bestTop = yMin, bestTopScore = -1, bestTopDist = Int.max
+        let topLo = max(0, yMin - tolerance)
+        let topHi = min(height - 1, yMin + tolerance)
+        if topLo <= topHi {
+            for cy in topLo...topHi {
+                let s = scoreRow(cy)
+                let dist = abs(cy - yMin)
+                if s > bestTopScore || (s == bestTopScore && dist < bestTopDist) {
+                    bestTopScore = s; bestTop = cy; bestTopDist = dist
+                }
+            }
+        }
+        if bestTopScore < minHScore { bestTop = yMin }
+
+        // Snap bottom.
+        var bestBot = yMax, bestBotScore = -1, bestBotDist = Int.max
+        let botLo = max(0, yMax - tolerance)
+        let botHi = min(height - 1, yMax + tolerance)
+        if botLo <= botHi {
+            for cy in botLo...botHi {
+                let s = scoreRow(cy)
+                let dist = abs(cy - yMax)
+                if s > bestBotScore || (s == bestBotScore && dist < bestBotDist) {
+                    bestBotScore = s; bestBot = cy; bestBotDist = dist
+                }
+            }
+        }
+        if bestBotScore < minHScore { bestBot = yMax }
+
+        // Snap left.
+        var bestLeft = xMin, bestLeftScore = -1, bestLeftDist = Int.max
+        let lLo = max(0, xMin - tolerance)
+        let lHi = min(width - 1, xMin + tolerance)
+        if lLo <= lHi {
+            for cx in lLo...lHi {
+                let s = scoreCol(cx)
+                let dist = abs(cx - xMin)
+                if s > bestLeftScore || (s == bestLeftScore && dist < bestLeftDist) {
+                    bestLeftScore = s; bestLeft = cx; bestLeftDist = dist
+                }
+            }
+        }
+        if bestLeftScore < minVScore { bestLeft = xMin }
+
+        // Snap right.
+        var bestRight = xMax, bestRightScore = -1, bestRightDist = Int.max
+        let rLo = max(0, xMax - tolerance)
+        let rHi = min(width - 1, xMax + tolerance)
+        if rLo <= rHi {
+            for cx in rLo...rHi {
+                let s = scoreCol(cx)
+                let dist = abs(cx - xMax)
+                if s > bestRightScore || (s == bestRightScore && dist < bestRightDist) {
+                    bestRightScore = s; bestRight = cx; bestRightDist = dist
+                }
+            }
+        }
+        if bestRightScore < minVScore { bestRight = xMax }
+
+        if bestRight <= bestLeft || bestBot <= bestTop { return rect }
+        return CGRect(x: bestLeft, y: bestTop,
+                      width: bestRight - bestLeft,
+                      height: bestBot - bestTop)
+    }
+
     // MARK: - Edge snap (kept for potential ruler use)
 
     func snapToEdge(near x: Int, _ y: Int, radius: Int, threshold: Int = 36) -> (Int, Int) {
