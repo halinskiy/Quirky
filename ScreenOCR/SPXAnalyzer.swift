@@ -25,7 +25,17 @@ final class SPXAnalyzer {
     private var vRunLen: UnsafeMutablePointer<UInt8>?
     private var hRunLen: UnsafeMutablePointer<UInt8>?
 
-    private let edgeThreshold: UInt8 = 24
+    /// Pixels with a gradient ≥ this value count as "edge pixels". Lower
+    /// catches softer borders (low-alpha strokes, anti-aliased rounded
+    /// rectangles, shadows). Changing it invalidates the run-length maps so
+    /// they get rebuilt on next access.
+    var edgeThreshold: UInt8 = 24 {
+        didSet {
+            guard oldValue != edgeThreshold else { return }
+            if let v = vRunLen { UnsafeMutableRawPointer(v).deallocate(); vRunLen = nil }
+            if let h = hRunLen { UnsafeMutableRawPointer(h).deallocate(); hRunLen = nil }
+        }
+    }
 
     init?(image: CGImage) {
         self.width = image.width

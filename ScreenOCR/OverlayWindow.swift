@@ -21,7 +21,10 @@ final class SelectionView: NSView {
     var isSPXMode = false
     var backgroundImage: CGImage? {
         didSet {
-            if let img = backgroundImage, isSPXMode { spxAnalyzer = SPXAnalyzer(image: img) }
+            if let img = backgroundImage, isSPXMode {
+                spxAnalyzer = SPXAnalyzer(image: img)
+                applySPXToleranceToAnalyzer()
+            }
         }
     }
 
@@ -52,8 +55,24 @@ final class SelectionView: NSView {
     private var spxLiveV: SPXLiveSegment?
     fileprivate var spxCommitted: [SPXSegment] = []
     fileprivate var spxColorIndex: Int = 0
-    private var spxToleranceIndex: Int = 2
-    fileprivate static let spxToleranceLevels: [Int] = [4, 8, 14, 24, 40, 64, 100]
+    private var spxToleranceIndex: Int = 3
+
+    fileprivate struct SPXTolerance {
+        let edgeThreshold: UInt8   // gradient strength — lower catches softer edges
+        let minRun: Int            // perpendicular run length to qualify as an edge
+    }
+    /// 7 steps from "only sharp short edges" to "soft window-scale borders".
+    /// Higher T lowers the gradient bar (softer borders qualify) AND raises the
+    /// run-length bar (lines pass through text and small UI).
+    fileprivate static let spxToleranceLevels: [SPXTolerance] = [
+        SPXTolerance(edgeThreshold: 40, minRun: 4),
+        SPXTolerance(edgeThreshold: 32, minRun: 8),
+        SPXTolerance(edgeThreshold: 24, minRun: 14),
+        SPXTolerance(edgeThreshold: 18, minRun: 24),   // default
+        SPXTolerance(edgeThreshold: 12, minRun: 40),
+        SPXTolerance(edgeThreshold:  7, minRun: 64),
+        SPXTolerance(edgeThreshold:  4, minRun: 100)
+    ]
 
     fileprivate struct SPXLiveSegment {
         let start: NSPoint       // view coords
@@ -527,13 +546,12 @@ final class SelectionView: NSView {
         // NB: spxCommitted / spxColorIndex are intentionally NOT cleared here.
         // The OverlayWindow restores prior segments via setSPXState(...) right
         // after this call when the user re-enters SPX. Esc → dismiss() wipes.
-        // Restore the tolerance index from the persisted minEdgeLength.
-        let stored = UserDefaults.standard.integer(forKey: "spxMinEdgeLength")
-        if stored > 0, let idx = SelectionView.spxToleranceLevels.firstIndex(of: stored) {
-            spxToleranceIndex = idx
-        } else {
-            spxToleranceIndex = 2  // default → 12 px
-        }
+        // Restore the tolerance index from UserDefaults (clamped).
+        let stored = UserDefaults.standard.object(forKey: "spxToleranceIndex") as? Int
+        let n = SelectionView.spxToleranceLevels.count
+        if let s = stored, s >= 0, s < n { spxToleranceIndex = s }
+        else { spxToleranceIndex = 3 }
+        applySPXToleranceToAnalyzer()
         needsDisplay = true
     }
 
@@ -549,16 +567,25 @@ final class SelectionView: NSView {
 
     // MARK: SPX helpers
 
-    private var spxMinEdgeLength: Int {
+    private var spxCurrentTolerance: SPXTolerance {
         SelectionView.spxToleranceLevels[spxToleranceIndex]
     }
 
-    /// Cycle tolerance index by `delta` (typically +1 for T, -1 for Shift+T).
-    /// Wraps around. Persists choice to UserDefaults via the minEdgeLength key.
+    private var spxMinEdgeLength: Int { spxCurrentTolerance.minRun }
+
+    /// Pushes the current tolerance's edgeThreshold onto the analyzer. The
+    /// analyzer's setter triggers a lazy rebuild of the run-length maps the
+    /// next time they're queried, so this is cheap.
+    private func applySPXToleranceToAnalyzer() {
+        spxAnalyzer?.edgeThreshold = spxCurrentTolerance.edgeThreshold
+    }
+
+    /// Cycle tolerance index by `delta` (+1 for T, -1 for Shift+T). Wraps.
     private func cycleSPXTolerance(_ delta: Int) {
         let n = SelectionView.spxToleranceLevels.count
         spxToleranceIndex = ((spxToleranceIndex + delta) % n + n) % n
-        UserDefaults.standard.set(spxMinEdgeLength, forKey: "spxMinEdgeLength")
+        UserDefaults.standard.set(spxToleranceIndex, forKey: "spxToleranceIndex")
+        applySPXToleranceToAnalyzer()
         recomputeSPXLiveSegments()
         needsDisplay = true
     }
@@ -668,7 +695,7 @@ final class SelectionView: NSView {
         let levels = SelectionView.spxToleranceLevels
         let current = spxToleranceIndex
         let white = NSColor(deviceRed: 1, green: 1, blue: 1, alpha: 1).cgColor
-        let labelText = "T  \(levels[current]) px"
+        let labelText = "T  \(current + 1)/\(levels.count)"
         let ctLine = SelectionView.makeCTLine(labelText, font: SelectionView.spxLabelFont, color: white)
         let lb = CTLineGetBoundsWithOptions(ctLine, [])
 
