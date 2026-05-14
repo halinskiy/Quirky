@@ -14,6 +14,7 @@ final class SelectionView: NSView {
     var onColorPicked: ((String) -> Void)?
     var onDOMElementPicked: ((String) -> Void)?
     var onSPXSizePicked: ((String) -> Void)?
+    var onSPXHide: (() -> Void)?
     var isSVGMode = false
     var isHEXMode = false
     var isDOMMode = false
@@ -49,10 +50,10 @@ final class SelectionView: NSView {
     private var spxCursor: NSPoint = .zero
     private var spxLiveH: SPXLiveSegment?
     private var spxLiveV: SPXLiveSegment?
-    private var spxCommitted: [SPXSegment] = []
-    private var spxColorIndex: Int = 0
+    fileprivate var spxCommitted: [SPXSegment] = []
+    fileprivate var spxColorIndex: Int = 0
     private var spxToleranceIndex: Int = 2
-    fileprivate static let spxToleranceLevels: [Int] = [4, 8, 12, 18, 28]
+    fileprivate static let spxToleranceLevels: [Int] = [4, 8, 14, 24, 40, 64, 100]
 
     fileprivate struct SPXLiveSegment {
         let start: NSPoint       // view coords
@@ -152,11 +153,9 @@ final class SelectionView: NSView {
         let point = convert(event.locationInWindow, from: nil)
         startPoint = point
         if isSPXMode {
-            // Click also commits both axes at the current cursor — same as H + V.
-            spxCursor = point
-            recomputeSPXLiveSegments()
-            commitSPXAxis(.horizontal)
-            commitSPXAxis(.vertical)
+            // Click hides the overlay but preserves committed segments. Re-opening
+            // SPX restores them. Esc is the explicit "exit & wipe" gesture.
+            onSPXHide?()
             return
         }
         selectionRect = .zero
@@ -525,8 +524,9 @@ final class SelectionView: NSView {
         }
         spxLiveH = nil
         spxLiveV = nil
-        spxCommitted.removeAll()
-        spxColorIndex = 0
+        // NB: spxCommitted / spxColorIndex are intentionally NOT cleared here.
+        // The OverlayWindow restores prior segments via setSPXState(...) right
+        // after this call when the user re-enters SPX. Esc → dismiss() wipes.
         // Restore the tolerance index from the persisted minEdgeLength.
         let stored = UserDefaults.standard.integer(forKey: "spxMinEdgeLength")
         if stored > 0, let idx = SelectionView.spxToleranceLevels.firstIndex(of: stored) {
@@ -922,6 +922,11 @@ final class OverlayWindow {
     private var completion: ((CGRect) -> Void)?
     private var cancellation: (() -> Void)?
 
+    // SPX state preserved across click-to-hide → re-open cycle.
+    // Wiped by dismiss() (Esc / mode switch / final pick).
+    fileprivate var spxPreservedSegments: [SelectionView.SPXSegment] = []
+    fileprivate var spxPreservedColorIndex: Int = 0
+
     // MARK: Show methods
 
     func showFast(screenImages: [(displayID: CGDirectDisplayID, image: CGImage)], onComplete: @escaping (CGRect) -> Void, onCancel: @escaping () -> Void) {
@@ -961,6 +966,8 @@ final class OverlayWindow {
         for window in windows {
             if let view = window.contentView as? SelectionView {
                 view.enableSPXMode(handler)
+                view.onSPXHide = { [weak self] in self?.hidePreservingSPX() }
+                restoreSPXState(into: view)
             }
         }
     }
@@ -1031,7 +1038,30 @@ final class OverlayWindow {
             view.onColorPicked = nil
             view.onDOMElementPicked = nil
             view.enableSPXMode(handler)
+            view.onSPXHide = { [weak self] in self?.hidePreservingSPX() }
+            restoreSPXState(into: view)
         }
+    }
+
+    /// Hide the overlay without invoking the cancellation callback. Preserves
+    /// SPX segments so the next showForSPX / switchToSPXMode restores them.
+    func hidePreservingSPX() {
+        if let view = windows.first?.contentView as? SelectionView, view.isSPXMode {
+            spxPreservedSegments = view.spxCommitted
+            spxPreservedColorIndex = view.spxColorIndex
+        }
+        for window in windows { window.orderOut(nil) }
+        NSCursor.arrow.set()
+        windows.removeAll()
+    }
+
+    /// Restore preserved SPX segments into a freshly-shown view. No-op when no
+    /// segments are stashed (first SPX entry / after Esc).
+    fileprivate func restoreSPXState(into view: SelectionView) {
+        guard !spxPreservedSegments.isEmpty else { return }
+        view.spxCommitted = spxPreservedSegments
+        view.spxColorIndex = spxPreservedColorIndex
+        view.needsDisplay = true
     }
 
     private func wrappedColorPicked(_ onColorPicked: @escaping (String) -> Void) -> (String) -> Void {
@@ -1129,6 +1159,10 @@ final class OverlayWindow {
         for window in windows { window.orderOut(nil) }
         NSCursor.arrow.set()
         windows.removeAll()
+        // Explicit dismiss (Esc, final pick, mode switch) wipes preserved SPX
+        // state — only click-hide via hidePreservingSPX preserves it.
+        spxPreservedSegments.removeAll()
+        spxPreservedColorIndex = 0
     }
 
     // MARK: Private
