@@ -217,7 +217,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 cycleMode()
             }
         } else {
-            currentMode = spxResumePending ? .spx : (EnabledModesStore.load().first ?? .ocr)
+            let enabled = EnabledModesStore.load()
+            // spxResumePending only counts if SPX is still in the enabled set —
+            // otherwise the user disabled SPX between sessions, so honor the
+            // current enabled list and drop the stale resume hint.
+            if spxResumePending && !enabled.contains(.spx) {
+                spxResumePending = false
+            }
+            currentMode = spxResumePending ? .spx : (enabled.first ?? .ocr)
             startCapture()
         }
     }
@@ -500,6 +507,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         EnabledModesStore.save(enabled)
         modeTogglesView?.update(enabled: enabled)
+        // Editing the enabled set invalidates any pending SPX resume — the
+        // user explicitly chose a different configuration, so the next hotkey
+        // should follow it, not jump back into SPX.
+        if !enabled.contains(.spx) { spxResumePending = false }
     }
 
     @objc private func setHighlightColor(_ sender: NSMenuItem) {
