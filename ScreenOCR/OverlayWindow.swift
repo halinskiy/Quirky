@@ -51,6 +51,8 @@ final class SelectionView: NSView {
     private var spxLiveV: SPXLiveSegment?
     private var spxCommitted: [SPXSegment] = []
     private var spxColorIndex: Int = 0
+    private var spxToleranceIndex: Int = 2
+    fileprivate static let spxToleranceLevels: [Int] = [4, 8, 12, 18, 28]
 
     fileprivate struct SPXLiveSegment {
         let start: NSPoint       // view coords
@@ -283,6 +285,7 @@ final class SelectionView: NSView {
             switch event.keyCode {
             case 4:  commitSPXAxis(.horizontal)              // H
             case 9:  commitSPXAxis(.vertical)                // V
+            case 17: cycleSPXTolerance(event.modifierFlags.contains(.shift) ? -1 : 1) // T
             case 51: popLastSPXSegment()                     // Backspace — undo last
             case 36, 76:                                     // Return / Enter
                 guard let last = spxCommitted.last else { return }
@@ -524,6 +527,13 @@ final class SelectionView: NSView {
         spxLiveV = nil
         spxCommitted.removeAll()
         spxColorIndex = 0
+        // Restore the tolerance index from the persisted minEdgeLength.
+        let stored = UserDefaults.standard.integer(forKey: "spxMinEdgeLength")
+        if stored > 0, let idx = SelectionView.spxToleranceLevels.firstIndex(of: stored) {
+            spxToleranceIndex = idx
+        } else {
+            spxToleranceIndex = 2  // default → 12 px
+        }
         needsDisplay = true
     }
 
@@ -540,8 +550,17 @@ final class SelectionView: NSView {
     // MARK: SPX helpers
 
     private var spxMinEdgeLength: Int {
-        let stored = UserDefaults.standard.integer(forKey: "spxMinEdgeLength")
-        return stored > 0 ? stored : 12
+        SelectionView.spxToleranceLevels[spxToleranceIndex]
+    }
+
+    /// Cycle tolerance index by `delta` (typically +1 for T, -1 for Shift+T).
+    /// Wraps around. Persists choice to UserDefaults via the minEdgeLength key.
+    private func cycleSPXTolerance(_ delta: Int) {
+        let n = SelectionView.spxToleranceLevels.count
+        spxToleranceIndex = ((spxToleranceIndex + delta) % n + n) % n
+        UserDefaults.standard.set(spxMinEdgeLength, forKey: "spxMinEdgeLength")
+        recomputeSPXLiveSegments()
+        needsDisplay = true
     }
 
     private func viewToImagePixel(_ p: NSPoint) -> (Int, Int)? {
@@ -638,6 +657,56 @@ final class SelectionView: NSView {
             let r: CGFloat = 2.5
             context.fillEllipse(in: CGRect(x: spxCursor.x - r, y: spxCursor.y - r,
                                            width: r * 2, height: r * 2))
+            context.restoreGState()
+        }
+
+        drawSPXToleranceChip(context: context)
+    }
+
+    /// Top-right chip: "T  ▮▮▮▯▯  12 px" — visualizes the current tolerance level.
+    private func drawSPXToleranceChip(context: CGContext) {
+        let levels = SelectionView.spxToleranceLevels
+        let current = spxToleranceIndex
+        let white = NSColor(deviceRed: 1, green: 1, blue: 1, alpha: 1).cgColor
+        let labelText = "T  \(levels[current]) px"
+        let ctLine = SelectionView.makeCTLine(labelText, font: SelectionView.spxLabelFont, color: white)
+        let lb = CTLineGetBoundsWithOptions(ctLine, [])
+
+        let hPad: CGFloat = 10, vPad: CGFloat = 6
+        let pipW: CGFloat = 5, pipH: CGFloat = 10, pipGap: CGFloat = 3
+        let pipsTotalW = CGFloat(levels.count) * pipW + CGFloat(levels.count - 1) * pipGap
+        let innerGap: CGFloat = 10
+        let totalW = hPad + lb.width + innerGap + pipsTotalW + hPad
+        let totalH = max(lb.height, pipH) + vPad * 2
+
+        let x = bounds.width - totalW - 14
+        let y = bounds.height - totalH - 14
+
+        let bg = CGRect(x: x, y: y, width: totalW, height: totalH)
+        context.saveGState()
+        context.addPath(CGPath(roundedRect: bg, cornerWidth: 6, cornerHeight: 6, transform: nil))
+        context.setFillColor(NSColor(deviceRed: 0, green: 0, blue: 0, alpha: 0.78).cgColor)
+        context.fillPath()
+        context.restoreGState()
+
+        // Label text.
+        context.textPosition = CGPoint(x: x + hPad - lb.minX,
+                                       y: y + (totalH - lb.height) / 2 - lb.minY)
+        CTLineDraw(ctLine, context)
+
+        // Pip bar — filled up to and including current level.
+        let pipsX = x + hPad + lb.width + innerGap
+        let pipsY = y + (totalH - pipH) / 2
+        for i in 0..<levels.count {
+            let px = pipsX + CGFloat(i) * (pipW + pipGap)
+            let rect = CGRect(x: px, y: pipsY, width: pipW, height: pipH)
+            let color: CGColor = (i <= current)
+                ? NSColor(deviceRed: 1, green: 1, blue: 1, alpha: 1).cgColor
+                : NSColor(deviceRed: 1, green: 1, blue: 1, alpha: 0.22).cgColor
+            context.saveGState()
+            context.addPath(CGPath(roundedRect: rect, cornerWidth: 1.5, cornerHeight: 1.5, transform: nil))
+            context.setFillColor(color)
+            context.fillPath()
             context.restoreGState()
         }
     }
