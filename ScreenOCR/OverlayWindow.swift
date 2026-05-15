@@ -843,13 +843,78 @@ final class SelectionView: NSView {
         if let h = analyzer.horizontalExtent(at: px, y: py, minEdgeLength: spxMinEdgeLength) {
             let s = imagePixelToView(h.left, py)
             let e = imagePixelToView(h.right, py)
-            spxLiveH = SPXLiveSegment(start: s, end: e, pxLength: h.right - h.left)
+            // Committed rects are obstacles too — clip the ray to their edges.
+            let (lx, rx) = clipHorizontalAgainstRects(vy: s.y, cursorX: spxCursor.x,
+                                                      left: s.x, right: e.x)
+            let cs = NSPoint(x: lx, y: s.y), ce = NSPoint(x: rx, y: e.y)
+            spxLiveH = SPXLiveSegment(start: cs, end: ce,
+                                      pxLength: viewLengthToImagePx(lx, rx, axisX: true))
         } else { spxLiveH = nil }
         if let v = analyzer.verticalExtent(at: px, y: py, minEdgeLength: spxMinEdgeLength) {
             let s = imagePixelToView(px, v.top)
             let e = imagePixelToView(px, v.bottom)
-            spxLiveV = SPXLiveSegment(start: s, end: e, pxLength: v.bottom - v.top)
+            let (ty, by) = clipVerticalAgainstRects(vx: s.x, cursorY: spxCursor.y,
+                                                    top: max(s.y, e.y), bottom: min(s.y, e.y))
+            let cs = NSPoint(x: s.x, y: ty), ce = NSPoint(x: e.x, y: by)
+            spxLiveV = SPXLiveSegment(start: cs, end: ce,
+                                      pxLength: viewLengthToImagePx(by, ty, axisX: false))
         } else { spxLiveV = nil }
+    }
+
+    /// Returns the committed rects in view coords (skips lines).
+    private var spxCommittedRects: [NSRect] {
+        spxCommitted.compactMap { seg in
+            guard seg.axis == .rect else { return nil }
+            return NSRect(x: seg.start.x, y: seg.start.y,
+                          width: seg.end.x - seg.start.x,
+                          height: seg.end.y - seg.start.y)
+        }
+    }
+
+    /// Convert a view-space span on one axis to image pixels (rounded).
+    private func viewLengthToImagePx(_ a: CGFloat, _ b: CGFloat, axisX: Bool) -> Int {
+        guard let image = backgroundImage else { return Int(abs(b - a).rounded()) }
+        let scale = axisX ? CGFloat(image.width) / bounds.width
+                          : CGFloat(image.height) / bounds.height
+        return Int((abs(b - a) * scale).rounded())
+    }
+
+    /// Clip a horizontal ruler at view-row `vy` to the nearest committed rect
+    /// edge on each side of `cursorX`. If the cursor is inside a rect, the
+    /// ruler is bounded by that rect's own left/right edges.
+    private func clipHorizontalAgainstRects(vy: CGFloat, cursorX: CGFloat,
+                                            left: CGFloat, right: CGFloat) -> (CGFloat, CGFloat) {
+        var l = left, r = right
+        for rect in spxCommittedRects {
+            guard vy >= rect.minY, vy <= rect.maxY else { continue }
+            if rect.maxX <= cursorX {
+                if rect.maxX > l { l = rect.maxX }
+            } else if rect.minX >= cursorX {
+                if rect.minX < r { r = rect.minX }
+            } else {
+                if rect.minX > l { l = rect.minX }
+                if rect.maxX < r { r = rect.maxX }
+            }
+        }
+        return (l, r)
+    }
+
+    /// Vertical analogue. `top` is the larger view-y, `bottom` the smaller.
+    private func clipVerticalAgainstRects(vx: CGFloat, cursorY: CGFloat,
+                                          top: CGFloat, bottom: CGFloat) -> (CGFloat, CGFloat) {
+        var t = top, b = bottom
+        for rect in spxCommittedRects {
+            guard vx >= rect.minX, vx <= rect.maxX else { continue }
+            if rect.maxY <= cursorY {
+                if rect.maxY > b { b = rect.maxY }
+            } else if rect.minY >= cursorY {
+                if rect.minY < t { t = rect.minY }
+            } else {
+                if rect.maxY < t { t = rect.maxY }
+                if rect.minY > b { b = rect.minY }
+            }
+        }
+        return (t, b)
     }
 
     private func commitSPXAxis(_ axis: SPXSegment.Axis) {
