@@ -495,10 +495,11 @@ final class SelectionView: NSView {
                 spxIsDragging = true
             }
             if spxIsDragging {
-                // Hold Space mid-drag to move the whole selection instead of
-                // resizing it — same gesture as OCR mode. Shifting the anchor
-                // by the same delta as the cursor keeps the size constant.
-                if spaceDown {
+                // Hold Space mid-drag to move the whole selection (OCR-style).
+                // Only honored once a real rectangle exists, so a stray Space
+                // reading at drag-start can't collapse the box to zero.
+                let hasRealRect = spxLiveDragRect.width > 8 && spxLiveDragRect.height > 8
+                if spaceDown && hasRealRect {
                     let dx = current.x - spxMoveLast.x
                     let dy = current.y - spxMoveLast.y
                     spxDragOrigin.x += dx
