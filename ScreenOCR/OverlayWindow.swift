@@ -76,6 +76,12 @@ final class SelectionView: NSView {
     }
     private var spxHoveredHandle: SPXHandle?
     private var spxActiveHandle: SPXHandle?
+    // Hover-to-reveal close (×) button on a committed segment.
+    private var spxHoverSegIndex: Int?
+    private var spxCloseTimer: Timer?
+    private var spxShowCloseForIndex: Int?
+    private let spxCloseRevealDelay: TimeInterval = 1.5
+    private let spxCloseBtnSize: CGFloat = 20
 
     fileprivate struct SPXTolerance {
         let edgeThreshold: UInt8   // gradient strength — lower catches softer edges
@@ -160,6 +166,113 @@ final class SelectionView: NSView {
             }
         }
         return nil
+    }
+
+    /// Tracks which segment the cursor is dwelling on and arms a timer to
+    /// reveal its close (×) button after `spxCloseRevealDelay`. Keeping the
+    /// button visible while the cursor is over the button itself is handled
+    /// in `spxCloseButtonContains`.
+    private func updateSPXCloseHover(at p: NSPoint) {
+        // Don't dismiss the button while the cursor is on it.
+        if let shown = spxShowCloseForIndex,
+           let r = spxCloseButtonRect(for: shown),
+           r.insetBy(dx: -4, dy: -4).contains(p) {
+            return
+        }
+        let seg = spxSegmentHitTest(at: p)
+        if seg == spxHoverSegIndex { return }
+        spxHoverSegIndex = seg
+        spxShowCloseForIndex = nil
+        spxCloseTimer?.invalidate()
+        spxCloseTimer = nil
+        guard let idx = seg else { needsDisplay = true; return }
+        let t = Timer(timeInterval: spxCloseRevealDelay, repeats: false) { [weak self] _ in
+            guard let self, self.spxHoverSegIndex == idx else { return }
+            self.spxShowCloseForIndex = idx
+            self.needsDisplay = true
+        }
+        spxCloseTimer = t
+        RunLoop.current.add(t, forMode: .common)
+        needsDisplay = true
+    }
+
+    /// Topmost committed segment whose body is under `p` (rect interior, or
+    /// near a line). Used for the hover-to-reveal close button.
+    private func spxSegmentHitTest(at p: NSPoint) -> Int? {
+        for i in stride(from: spxCommitted.count - 1, through: 0, by: -1) {
+            let seg = spxCommitted[i]
+            if seg.axis == .rect {
+                let r = NSRect(x: seg.start.x, y: seg.start.y,
+                               width: seg.end.x - seg.start.x,
+                               height: seg.end.y - seg.start.y).insetBy(dx: -6, dy: -6)
+                if r.contains(p) { return i }
+            } else {
+                // Distance from p to the axis-aligned segment.
+                let a = seg.start, b = seg.end
+                let near: Bool
+                if abs(a.y - b.y) < 0.5 {        // horizontal
+                    near = p.x >= min(a.x, b.x) - 6 && p.x <= max(a.x, b.x) + 6
+                        && abs(p.y - a.y) <= 6
+                } else {                          // vertical
+                    near = p.y >= min(a.y, b.y) - 6 && p.y <= max(a.y, b.y) + 6
+                        && abs(p.x - a.x) <= 6
+                }
+                if near { return i }
+            }
+        }
+        return nil
+    }
+
+    /// View-space rect of the close (×) button for segment `i`. Default is the
+    /// top-right corner of the segment's bounds; if that's too close to a
+    /// screen edge, pick the corner with the most surrounding room.
+    private func spxCloseButtonRect(for i: Int) -> NSRect? {
+        guard i < spxCommitted.count else { return nil }
+        let seg = spxCommitted[i]
+        let b: NSRect
+        if seg.axis == .rect {
+            b = NSRect(x: seg.start.x, y: seg.start.y,
+                       width: seg.end.x - seg.start.x,
+                       height: seg.end.y - seg.start.y)
+        } else {
+            b = NSRect(x: min(seg.start.x, seg.end.x),
+                       y: min(seg.start.y, seg.end.y),
+                       width: abs(seg.end.x - seg.start.x),
+                       height: abs(seg.end.y - seg.start.y))
+        }
+        let s = spxCloseBtnSize
+        let gap: CGFloat = 6
+        let margin: CGFloat = 8
+        // Candidate centers just outside each corner of the bounds.
+        // (corner offset, scored by free space toward that corner).
+        let candidates: [(center: NSPoint, score: CGFloat)] = [
+            // top-right
+            (NSPoint(x: b.maxX + gap + s/2, y: b.maxY + gap + s/2),
+             (bounds.width - b.maxX) + (bounds.height - b.maxY)),
+            // top-left
+            (NSPoint(x: b.minX - gap - s/2, y: b.maxY + gap + s/2),
+             b.minX + (bounds.height - b.maxY)),
+            // bottom-right
+            (NSPoint(x: b.maxX + gap + s/2, y: b.minY - gap - s/2),
+             (bounds.width - b.maxX) + b.minY),
+            // bottom-left
+            (NSPoint(x: b.minX - gap - s/2, y: b.minY - gap - s/2),
+             b.minX + b.minY)
+        ]
+        // Prefer top-right (index 0) unless it doesn't fit; otherwise the
+        // highest-scoring corner that fits on screen.
+        func fits(_ c: NSPoint) -> Bool {
+            c.x - s/2 >= margin && c.x + s/2 <= bounds.width - margin
+                && c.y - s/2 >= margin && c.y + s/2 <= bounds.height - margin
+        }
+        if fits(candidates[0].center) {
+            let c = candidates[0].center
+            return NSRect(x: c.x - s/2, y: c.y - s/2, width: s, height: s)
+        }
+        let best = candidates.filter { fits($0.center) }.max { $0.score < $1.score }
+            ?? candidates[0]
+        let c = best.center
+        return NSRect(x: c.x - s/2, y: c.y - s/2, width: s, height: s)
     }
 
     /// Update segment endpoint/corner during a resize drag. Snaps the dragged
@@ -294,6 +407,7 @@ final class SelectionView: NSView {
                 if newHover != nil { spxLiveH = nil; spxLiveV = nil }
             }
             if newHover == nil { recomputeSPXLiveSegments() }
+            updateSPXCloseHover(at: point)
             needsDisplay = true
             return
         }
@@ -311,6 +425,13 @@ final class SelectionView: NSView {
         let point = convert(event.locationInWindow, from: nil)
         startPoint = point
         if isSPXMode {
+            // Close (×) button takes priority over everything else.
+            if let shown = spxShowCloseForIndex,
+               let cr = spxCloseButtonRect(for: shown),
+               cr.insetBy(dx: -3, dy: -3).contains(point) {
+                deleteSPXSegment(at: shown)
+                return
+            }
             if let h = spxHandleHitTest(at: point) {
                 // Double-click a rect's corner → re-run magnetism on the
                 // segment's current bounds, animate the rect to fit content.
@@ -799,6 +920,10 @@ final class SelectionView: NSView {
         spxSnapAnimTimer = nil
         spxIsSnapAnimating = false
         spxLiveDragRect = .zero
+        spxHoverSegIndex = nil
+        spxShowCloseForIndex = nil
+        spxCloseTimer?.invalidate()
+        spxCloseTimer = nil
         onSPXSizePicked = nil
     }
 
@@ -1124,6 +1249,18 @@ final class SelectionView: NSView {
         needsDisplay = true
     }
 
+    private func deleteSPXSegment(at index: Int) {
+        guard index < spxCommitted.count else { return }
+        spxCommitted.remove(at: index)
+        if spxColorIndex > 0 { spxColorIndex -= 1 }
+        spxHoverSegIndex = nil
+        spxShowCloseForIndex = nil
+        spxCloseTimer?.invalidate()
+        spxCloseTimer = nil
+        recomputeSPXLiveSegments()
+        needsDisplay = true
+    }
+
     private func copySPXLengthToPasteboard(_ px: Int) {
         let pb = NSPasteboard.general
         pb.clearContents()
@@ -1202,7 +1339,36 @@ final class SelectionView: NSView {
             }
 
             drawSPXToleranceChip(context: context)
+
+            // Hover-revealed close (×) button.
+            if let idx = spxShowCloseForIndex, let cr = spxCloseButtonRect(for: idx) {
+                drawSPXCloseButton(context: context, rect: cr)
+            }
         }
+    }
+
+    private func drawSPXCloseButton(context: CGContext, rect: NSRect) {
+        context.saveGState()
+        // Circular dark chip.
+        context.setFillColor(NSColor(deviceRed: 0.12, green: 0.12, blue: 0.13,
+                                     alpha: 0.95).cgColor)
+        context.fillEllipse(in: rect)
+        context.setStrokeColor(NSColor.white.withAlphaComponent(0.25).cgColor)
+        context.setLineWidth(1)
+        context.strokeEllipse(in: rect)
+        // The × glyph.
+        let inset: CGFloat = rect.width * 0.32
+        let p1 = CGRect(x: rect.minX + inset, y: rect.minY + inset,
+                        width: rect.width - inset * 2, height: rect.height - inset * 2)
+        context.setStrokeColor(NSColor.white.withAlphaComponent(0.9).cgColor)
+        context.setLineWidth(1.8)
+        context.setLineCap(.round)
+        context.move(to: CGPoint(x: p1.minX, y: p1.minY))
+        context.addLine(to: CGPoint(x: p1.maxX, y: p1.maxY))
+        context.move(to: CGPoint(x: p1.minX, y: p1.maxY))
+        context.addLine(to: CGPoint(x: p1.maxX, y: p1.minY))
+        context.strokePath()
+        context.restoreGState()
     }
 
     /// Rounded rectangle measurement with corner handles for resizing.
