@@ -57,6 +57,7 @@ final class SelectionView: NSView {
     fileprivate var spxColorIndex: Int = 0
     private var spxToleranceIndex: Int = 2
     private var spxDragOrigin: NSPoint = .zero
+    private var spxMoveLast: NSPoint = .zero    // for Space-to-move during a drag
     private var spxIsDragging: Bool = false
     private var spxLiveDragRect: NSRect = .zero  // raw during drag; lerped during snap-on-release
     private var spxIsSnapAnimating: Bool = false
@@ -324,6 +325,7 @@ final class SelectionView: NSView {
                 return
             }
             spxDragOrigin = point
+            spxMoveLast = point
             spxIsDragging = false
             spxLiveDragRect = .zero
             spxCursor = point
@@ -372,9 +374,18 @@ final class SelectionView: NSView {
                 spxIsDragging = true
             }
             if spxIsDragging {
-                // Free drag — no snapping while the button is held. The rect
-                // follows the cursor exactly. Magnetic snap is animated on
-                // release in mouseUp.
+                // Hold Space mid-drag to move the whole selection instead of
+                // resizing it — same gesture as OCR mode. Shifting the anchor
+                // by the same delta as the cursor keeps the size constant.
+                if spaceDown {
+                    let dx = current.x - spxMoveLast.x
+                    let dy = current.y - spxMoveLast.y
+                    spxDragOrigin.x += dx
+                    spxDragOrigin.y += dy
+                }
+                spxMoveLast = current
+                // Free drag — no snapping while the button is held. Magnetic
+                // snap is animated on release in mouseUp.
                 spxLiveDragRect = NSRect(
                     x: min(spxDragOrigin.x, current.x),
                     y: min(spxDragOrigin.y, current.y),
