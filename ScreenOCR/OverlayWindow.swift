@@ -142,14 +142,22 @@ final class SelectionView: NSView {
     // MARK: SPX handle hit-test
 
     /// Anchor points of a committed segment in view coords.
-    /// Lines: 2 endpoints. Rects: 4 corners (TL, TR, BL, BR).
+    /// Lines: 2 endpoints. Rects: 4 corners (0–3) + 4 edge midpoints (4–7):
+    /// 4=left, 5=right, 6=bottom, 7=top.
     fileprivate func spxHandlePoints(for seg: SPXSegment) -> [NSPoint] {
         if seg.axis == .rect {
+            let x0 = seg.start.x, x1 = seg.end.x
+            let y0 = seg.start.y, y1 = seg.end.y
+            let mx = (x0 + x1) / 2, my = (y0 + y1) / 2
             return [
-                NSPoint(x: seg.start.x, y: seg.start.y),
-                NSPoint(x: seg.end.x,   y: seg.start.y),
-                NSPoint(x: seg.start.x, y: seg.end.y),
-                NSPoint(x: seg.end.x,   y: seg.end.y)
+                NSPoint(x: x0, y: y0),   // 0
+                NSPoint(x: x1, y: y0),   // 1
+                NSPoint(x: x0, y: y1),   // 2
+                NSPoint(x: x1, y: y1),   // 3
+                NSPoint(x: x0, y: my),   // 4 left edge
+                NSPoint(x: x1, y: my),   // 5 right edge
+                NSPoint(x: mx, y: y0),   // 6 bottom edge
+                NSPoint(x: mx, y: y1)    // 7 top edge
             ]
         }
         return [seg.start, seg.end]
@@ -286,10 +294,14 @@ final class SelectionView: NSView {
             var minX = seg.start.x, minY = seg.start.y
             var maxX = seg.end.x,   maxY = seg.end.y
             switch h.cornerIndex {
-            case 0: minX = snapped.x; minY = snapped.y     // TL
-            case 1: maxX = snapped.x; minY = snapped.y     // TR
-            case 2: minX = snapped.x; maxY = snapped.y     // BL
-            default: maxX = snapped.x; maxY = snapped.y    // BR
+            case 0: minX = snapped.x; minY = snapped.y     // corner
+            case 1: maxX = snapped.x; minY = snapped.y     // corner
+            case 2: minX = snapped.x; maxY = snapped.y     // corner
+            case 3: maxX = snapped.x; maxY = snapped.y     // corner
+            case 4: minX = snapped.x                       // left edge
+            case 5: maxX = snapped.x                       // right edge
+            case 6: minY = snapped.y                       // bottom edge
+            default: maxY = snapped.y                      // top edge
             }
             if maxX < minX { swap(&minX, &maxX) }
             if maxY < minY { swap(&minY, &maxY) }
@@ -1401,13 +1413,20 @@ final class SelectionView: NSView {
         context.stroke(rect)
         context.restoreGState()
 
-        // Corner handles (TL, TR, BL, BR).
+        // Corner handles (0–3) + edge-midpoint handles (4–7), same order as
+        // spxHandlePoints so hover/active indices line up.
         if drawHandles {
-            let corners = [rect.origin,
-                           NSPoint(x: rect.maxX, y: rect.minY),
-                           NSPoint(x: rect.minX, y: rect.maxY),
-                           NSPoint(x: rect.maxX, y: rect.maxY)]
-            for (i, c) in corners.enumerated() {
+            let pts = [
+                rect.origin,                                   // 0
+                NSPoint(x: rect.maxX, y: rect.minY),           // 1
+                NSPoint(x: rect.minX, y: rect.maxY),           // 2
+                NSPoint(x: rect.maxX, y: rect.maxY),           // 3
+                NSPoint(x: rect.minX, y: rect.midY),           // 4 left
+                NSPoint(x: rect.maxX, y: rect.midY),           // 5 right
+                NSPoint(x: rect.midX, y: rect.minY),           // 6 bottom
+                NSPoint(x: rect.midX, y: rect.maxY)            // 7 top
+            ]
+            for (i, c) in pts.enumerated() {
                 drawHandle(context: context, at: c, color: drawColor,
                            hovered: i == hoveredHandle, active: i == activeHandle)
             }
