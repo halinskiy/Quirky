@@ -47,10 +47,13 @@ echo "==> Submitting $ZIP to Apple notary service (profile: $NOTARY_PROFILE)"
 SUBMIT_LOG=$(xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait 2>&1)
 echo "$SUBMIT_LOG"
 
-STATUS=$(echo "$SUBMIT_LOG" | awk '/status:/{print $2; exit}')
+# notarytool prints both "Current status: <foo>" progress lines and a
+# final "status: Accepted" once processing finishes. Grab the LAST
+# non-progress status line so we don't read "In Progress" as the final.
+STATUS=$(echo "$SUBMIT_LOG" | awk '/^[[:space:]]*status:/{val=$2} END{print val}')
 if [ "$STATUS" != "Accepted" ]; then
     echo "Notarization failed (status: $STATUS)" >&2
-    SUB_ID=$(echo "$SUBMIT_LOG" | awk '/id:/{print $2; exit}')
+    SUB_ID=$(echo "$SUBMIT_LOG" | awk '/^[[:space:]]*id:/{val=$2} END{print val}')
     if [ -n "$SUB_ID" ]; then
         echo "==> Fetching submission log for $SUB_ID"
         xcrun notarytool log "$SUB_ID" --keychain-profile "$NOTARY_PROFILE" || true

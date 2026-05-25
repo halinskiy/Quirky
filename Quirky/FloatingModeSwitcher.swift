@@ -26,6 +26,9 @@ final class FloatingModeSwitcher {
     static let parkDuration: TimeInterval = 0.34
     static let parkInset: CGFloat = 28
     static let hoverUnparkDelay: TimeInterval = 0.07
+    /// Park almost immediately after the cursor leaves the panel bounds.
+    /// Small grace so a 1-pixel cursor wiggle past the edge doesn't park.
+    static let exitParkDelay: TimeInterval = 0.18
 
     weak var delegate: FloatingModeSwitcherDelegate?
 
@@ -38,6 +41,7 @@ final class FloatingModeSwitcher {
     private(set) var isParked: Bool = true
     private var idleTimer: Timer?
     private var hoverUnparkTimer: Timer?
+    private var exitParkTimer: Timer?
     private var isVisible = false
 
     // Spring animator state.
@@ -74,11 +78,14 @@ final class FloatingModeSwitcher {
         container.onDragEnd = { [weak self] in self?.handleDragEnd() }
         container.onHoverChange = { [weak self] in self?.handleHoverChange() }
         container.onArrowHoverChange = { [weak self] hovered in self?.handleArrowHoverChange(hovered) }
+        container.onPanelMouseEnter = { [weak self] in self?.handlePanelEnter() }
+        container.onPanelMouseExit = { [weak self] in self?.handlePanelExit() }
     }
 
     deinit {
         idleTimer?.invalidate()
         hoverUnparkTimer?.invalidate()
+        exitParkTimer?.invalidate()
         animTimer?.invalidate()
     }
 
@@ -131,6 +138,7 @@ final class FloatingModeSwitcher {
     func hide() {
         idleTimer?.invalidate()
         hoverUnparkTimer?.invalidate()
+        exitParkTimer?.invalidate()
         animTimer?.invalidate()
         animTimer = nil
         isVisible = false
@@ -155,6 +163,27 @@ final class FloatingModeSwitcher {
 
     private func handleHoverChange() {
         if !isParked { kickIdleTimer() }
+    }
+
+    /// Cursor entered the panel bounds — cancel any pending exit-park.
+    /// (User is interacting again, so don't dismiss.)
+    private func handlePanelEnter() {
+        exitParkTimer?.invalidate()
+        exitParkTimer = nil
+    }
+
+    /// Cursor left the panel bounds — park almost immediately. This is the
+    /// user's "I'm done with this" signal; we don't make them wait for the
+    /// longer idle timeout.
+    private func handlePanelExit() {
+        guard isVisible, !isParked else { return }
+        exitParkTimer?.invalidate()
+        let t = Timer(timeInterval: Self.exitParkDelay, repeats: false) { [weak self] _ in
+            guard let self = self, self.isVisible, !self.isParked else { return }
+            self.parkToEdge(self.parkedEdge, animated: true)
+        }
+        RunLoop.current.add(t, forMode: .common)
+        exitParkTimer = t
     }
 
     private func handleArrowHoverChange(_ hovered: Bool) {
@@ -385,6 +414,8 @@ final class FloatingSwitcherContainer: NSView {
     var onDragEnd: (() -> Void)?
     var onHoverChange: (() -> Void)?
     var onArrowHoverChange: ((Bool) -> Void)?
+    var onPanelMouseEnter: (() -> Void)?
+    var onPanelMouseExit: (() -> Void)?
 
     private var enabledModes: [CaptureMode] = []
     private var currentMode: CaptureMode = .ocr
@@ -670,7 +701,10 @@ final class FloatingSwitcherContainer: NSView {
     }
 
     override func mouseMoved(with event: NSEvent) { updateHover(event) }
-    override func mouseEntered(with event: NSEvent) { updateHover(event) }
+    override func mouseEntered(with event: NSEvent) {
+        onPanelMouseEnter?()
+        updateHover(event)
+    }
     override func mouseExited(with event: NSEvent) {
         var changed = false
         var arrowChanged = false
@@ -681,6 +715,7 @@ final class FloatingSwitcherContainer: NSView {
             onHoverChange?()
             if arrowChanged { onArrowHoverChange?(false) }
         }
+        onPanelMouseExit?()
     }
 
     private func updateHover(_ event: NSEvent) {
