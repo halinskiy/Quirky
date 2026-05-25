@@ -21,9 +21,11 @@ final class FloatingModeSwitcher {
     static let arrowTabThickness: CGFloat = 22
 
     static let autoParkDelay: TimeInterval = 2.5
-    static let initialShowDelay: TimeInterval = 1.6
-    static let slideDuration: TimeInterval = 0.32
+    static let initialShowDelay: TimeInterval = 1.7
+    static let unparkDuration: TimeInterval = 0.62
+    static let parkDuration: TimeInterval = 0.34
     static let parkInset: CGFloat = 28
+    static let hoverUnparkDelay: TimeInterval = 0.07
 
     weak var delegate: FloatingModeSwitcherDelegate?
 
@@ -35,7 +37,17 @@ final class FloatingModeSwitcher {
     private var parkedEdge: FloatingSwitcherEdge = .bottom
     private(set) var isParked: Bool = true
     private var idleTimer: Timer?
+    private var hoverUnparkTimer: Timer?
     private var isVisible = false
+
+    // Spring animator state.
+    private var animTimer: Timer?
+    private var animStartFrame: NSRect = .zero
+    private var animTargetFrame: NSRect = .zero
+    private var animStartTime: CFTimeInterval = 0
+    private var animDuration: CFTimeInterval = 0
+    private var animEasing: (CGFloat) -> CGFloat = { $0 }
+    private var animCompletion: (() -> Void)?
 
     init() {
         let rect = NSRect(x: 0, y: 0, width: 320, height: 86)
@@ -61,10 +73,13 @@ final class FloatingModeSwitcher {
         container.onDragMove = { [weak self] dx, dy in self?.handleDragMove(dx: dx, dy: dy) }
         container.onDragEnd = { [weak self] in self?.handleDragEnd() }
         container.onHoverChange = { [weak self] in self?.handleHoverChange() }
+        container.onArrowHoverChange = { [weak self] hovered in self?.handleArrowHoverChange(hovered) }
     }
 
     deinit {
         idleTimer?.invalidate()
+        hoverUnparkTimer?.invalidate()
+        animTimer?.invalidate()
     }
 
     // MARK: - Public API
@@ -94,11 +109,15 @@ final class FloatingModeSwitcher {
         panel.setFrame(parkedStart, display: false)
         panel.orderFrontRegardless()
 
-        // Slide in: parked → unparked, then auto-park after a moment.
+        // Slide in: parked → unparked with a springy overshoot, then auto-park.
+        // Claim the unparked state before starting the animation so a hover
+        // during slide-in doesn't fire a second unpark.
         container.setParked(false)
-        animateFrame(to: unparkedFrame) { [weak self] in
+        isParked = false
+        animateFrame(to: unparkedFrame,
+                     duration: Self.unparkDuration,
+                     easing: Self.easeOutBack) { [weak self] in
             guard let self = self else { return }
-            self.isParked = false
             self.scheduleAutoPark(after: Self.initialShowDelay)
         }
     }
@@ -111,6 +130,9 @@ final class FloatingModeSwitcher {
 
     func hide() {
         idleTimer?.invalidate()
+        hoverUnparkTimer?.invalidate()
+        animTimer?.invalidate()
+        animTimer = nil
         isVisible = false
         panel.orderOut(nil)
     }
@@ -118,6 +140,8 @@ final class FloatingModeSwitcher {
     // MARK: - Park / unpark
 
     private func handleArrowClick() {
+        // Hover handles the common "open" case automatically; clicks remain
+        // a deliberate fallback for trackpad tap-to-click and parking.
         if isParked { unpark(animated: true) } else { parkToEdge(parkedEdge, animated: true) }
     }
 
@@ -133,6 +157,27 @@ final class FloatingModeSwitcher {
         if !isParked { kickIdleTimer() }
     }
 
+    private func handleArrowHoverChange(_ hovered: Bool) {
+        guard isParked, isVisible else {
+            hoverUnparkTimer?.invalidate()
+            hoverUnparkTimer = nil
+            return
+        }
+        if hovered {
+            // Tiny debounce so a fast cursor flyby past the tab doesn't pop the pill.
+            hoverUnparkTimer?.invalidate()
+            let t = Timer(timeInterval: Self.hoverUnparkDelay, repeats: false) { [weak self] _ in
+                guard let self = self, self.isParked, self.isVisible else { return }
+                self.unpark(animated: true)
+            }
+            RunLoop.current.add(t, forMode: .common)
+            hoverUnparkTimer = t
+        } else {
+            hoverUnparkTimer?.invalidate()
+            hoverUnparkTimer = nil
+        }
+    }
+
     private func handleDragMove(dx: CGFloat, dy: CGFloat) {
         var f = panel.frame
         f.origin.x += dx
@@ -146,17 +191,24 @@ final class FloatingModeSwitcher {
     }
 
     private func unpark(animated: Bool) {
-        guard let screen = panel.screen ?? NSScreen.main else { return }
+        guard isParked, let screen = panel.screen ?? NSScreen.main else { return }
+        // Claim the state immediately so a near-simultaneous hover + click
+        // doesn't restart the animation halfway through.
+        isParked = false
+        hoverUnparkTimer?.invalidate()
+        hoverUnparkTimer = nil
         let f = panel.frame
         let target = unparkedFrame(for: f, edge: parkedEdge, screen: screen)
         container.setParked(false)
         let finish: () -> Void = { [weak self] in
             guard let self = self else { return }
-            self.isParked = false
             self.scheduleAutoPark(after: Self.autoParkDelay)
         }
         if animated {
-            animateFrame(to: target, completion: finish)
+            animateFrame(to: target,
+                         duration: Self.unparkDuration,
+                         easing: Self.easeOutBack,
+                         completion: finish)
         } else {
             panel.setFrameOrigin(target.origin)
             finish()
@@ -164,17 +216,18 @@ final class FloatingModeSwitcher {
     }
 
     private func parkToEdge(_ edge: FloatingSwitcherEdge, animated: Bool) {
-        guard let screen = panel.screen ?? NSScreen.main else { return }
+        guard !isParked, let screen = panel.screen ?? NSScreen.main else { return }
+        isParked = true
         let f = panel.frame
         let target = parkedFrame(for: f, edge: edge, screen: screen)
         container.setParked(true)
         idleTimer?.invalidate()
-        let finish: () -> Void = { [weak self] in self?.isParked = true }
         if animated {
-            animateFrame(to: target, completion: finish)
+            animateFrame(to: target,
+                         duration: Self.parkDuration,
+                         easing: Self.easeOutCubic)
         } else {
             panel.setFrameOrigin(target.origin)
-            finish()
         }
     }
 
@@ -203,7 +256,9 @@ final class FloatingModeSwitcher {
         panel.setFrame(rect, display: false)
 
         let target = unparkedFrame(for: rect, edge: newEdge, screen: screen)
-        animateFrame(to: target) { [weak self] in
+        animateFrame(to: target,
+                     duration: Self.unparkDuration,
+                     easing: Self.easeOutBack) { [weak self] in
             guard let self = self else { return }
             self.isParked = false
             self.scheduleAutoPark(after: Self.autoParkDelay)
@@ -259,17 +314,64 @@ final class FloatingModeSwitcher {
         scheduleAutoPark(after: Self.autoParkDelay)
     }
 
-    // MARK: - Animation
+    // MARK: - Animation (custom spring — NSAnimationContext can't overshoot
+    // cleanly with allowsImplicitAnimation on a borderless panel, so drive
+    // the frame manually at 60Hz with a spring-y easing curve).
 
-    private func animateFrame(to target: NSRect, completion: (() -> Void)? = nil) {
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = Self.slideDuration
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            ctx.allowsImplicitAnimation = true
-            panel.animator().setFrame(target, display: true)
-        }, completionHandler: {
-            completion?()
-        })
+    private func animateFrame(to target: NSRect,
+                              duration: TimeInterval,
+                              easing: @escaping (CGFloat) -> CGFloat,
+                              completion: (() -> Void)? = nil) {
+        animTimer?.invalidate()
+        animStartFrame = panel.frame
+        animTargetFrame = target
+        animStartTime = CACurrentMediaTime()
+        animDuration = duration
+        animEasing = easing
+        // If a previous animation had a completion that hasn't fired, drop it —
+        // the new animation supersedes it.
+        animCompletion = completion
+
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            self?.tickAnimation()
+        }
+        RunLoop.current.add(timer, forMode: .common)
+        animTimer = timer
+    }
+
+    private func tickAnimation() {
+        let elapsed = CACurrentMediaTime() - animStartTime
+        let raw = max(0.0, min(1.0, elapsed / animDuration))
+        let p = animEasing(CGFloat(raw))
+        let f = NSRect(
+            x: animStartFrame.origin.x + (animTargetFrame.origin.x - animStartFrame.origin.x) * p,
+            y: animStartFrame.origin.y + (animTargetFrame.origin.y - animStartFrame.origin.y) * p,
+            width: animStartFrame.size.width + (animTargetFrame.size.width - animStartFrame.size.width) * p,
+            height: animStartFrame.size.height + (animTargetFrame.size.height - animStartFrame.size.height) * p
+        )
+        panel.setFrame(f, display: true)
+        if raw >= 1.0 {
+            animTimer?.invalidate()
+            animTimer = nil
+            panel.setFrame(animTargetFrame, display: true)
+            let c = animCompletion
+            animCompletion = nil
+            c?()
+        }
+    }
+
+    // Playful overshoot (~10%) — Airbnb-style spring.
+    static func easeOutBack(_ t: CGFloat) -> CGFloat {
+        let c1: CGFloat = 1.70158
+        let c3: CGFloat = c1 + 1
+        let u = t - 1
+        return 1 + c3 * u * u * u + c1 * u * u
+    }
+
+    // Clean settle without overshoot — used when parking back off-screen.
+    static func easeOutCubic(_ t: CGFloat) -> CGFloat {
+        let u = t - 1
+        return 1 + u * u * u
     }
 }
 
@@ -282,6 +384,7 @@ final class FloatingSwitcherContainer: NSView {
     var onDragMove: ((CGFloat, CGFloat) -> Void)?
     var onDragEnd: (() -> Void)?
     var onHoverChange: (() -> Void)?
+    var onArrowHoverChange: ((Bool) -> Void)?
 
     private var enabledModes: [CaptureMode] = []
     private var currentMode: CaptureMode = .ocr
@@ -570,9 +673,14 @@ final class FloatingSwitcherContainer: NSView {
     override func mouseEntered(with event: NSEvent) { updateHover(event) }
     override func mouseExited(with event: NSEvent) {
         var changed = false
+        var arrowChanged = false
         if hoveredChip != nil { hoveredChip = nil; changed = true }
-        if hoveredArrow { hoveredArrow = false; changed = true }
-        if changed { needsDisplay = true; onHoverChange?() }
+        if hoveredArrow { hoveredArrow = false; changed = true; arrowChanged = true }
+        if changed {
+            needsDisplay = true
+            onHoverChange?()
+            if arrowChanged { onArrowHoverChange?(false) }
+        }
     }
 
     private func updateHover(_ event: NSEvent) {
@@ -584,11 +692,13 @@ final class FloatingSwitcherContainer: NSView {
             }
         }
         let newArrow = arrowTabRect().contains(p)
-        if newChip != hoveredChip || newArrow != hoveredArrow {
+        let arrowChanged = (newArrow != hoveredArrow)
+        if newChip != hoveredChip || arrowChanged {
             hoveredChip = newChip
             hoveredArrow = newArrow
             needsDisplay = true
             onHoverChange?()
+            if arrowChanged { onArrowHoverChange?(newArrow) }
         }
     }
 
