@@ -132,7 +132,18 @@ final class FloatingModeSwitcher {
     func setCurrentMode(_ mode: CaptureMode) {
         currentMode = mode
         container.setActiveMode(mode)
-        kickIdleTimer()
+        // Mode change is explicit user feedback — cancel any pending park and
+        // bring the pill back into view so the user sees which mode they
+        // just switched to. Without this, cycling via Cmd+Shift+1 while the
+        // pill is already parked (or about to park) would silently update
+        // the active chip behind the screen edge.
+        exitParkTimer?.invalidate()
+        exitParkTimer = nil
+        if isVisible, isParked {
+            unpark(animated: true)
+        } else {
+            kickIdleTimer()
+        }
     }
 
     func hide() {

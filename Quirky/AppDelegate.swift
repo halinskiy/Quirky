@@ -67,6 +67,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         isCapturing && currentMode == .spx
     }
 
+    /// Tab cycles through enabled modes while a capture session is active,
+    /// as a single-key alternative to ⌘⇧1. Only consumes the event when
+    /// there's actually something to cycle to.
+    fileprivate func shouldHandleTabCycle() -> Bool {
+        guard isCapturing else { return false }
+        return EnabledModesStore.load().count > 1
+    }
+
+    fileprivate func handleTabCycle() {
+        cycleMode()
+    }
+
     /// Tap-level Esc dispatcher — closes the overlay and wipes preserved
     /// segments, mirroring the view's keyDown handler. Reachable even when
     /// the overlay is in ghost mode (not the key window).
@@ -211,6 +223,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // (and so opaque-mode Esc never leaks to the app underneath).
                 if !hasCmd && !hasShift && !hasExtra && keyCode == 53 && app.shouldInterceptEscape() {
                     DispatchQueue.main.async { app.handleEscapeWhileSPXActive() }
+                    return nil
+                }
+                // Tab while capturing — cycle to the next enabled mode without
+                // chording. Only consumed when ≥2 modes are enabled, so Tab
+                // outside capture (and capture with a single enabled mode)
+                // passes through to whatever app is focused.
+                if !hasCmd && !hasShift && !hasExtra && keyCode == 48 && app.shouldHandleTabCycle() {
+                    DispatchQueue.main.async { app.handleTabCycle() }
                     return nil
                 }
                 return Unmanaged.passUnretained(event)

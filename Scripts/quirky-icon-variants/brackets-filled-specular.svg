@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#EBEBEF"/>
+    </linearGradient>
+    <linearGradient id="bgGloss" x1="0" y1="0" x2="0" y2="500" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+
+    <linearGradient id="bracketFill" x1="0" y1="124" x2="0" y2="900" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2C2C34"/>
+      <stop offset="0.5" stop-color="#0E0E14"/>
+      <stop offset="1" stop-color="#000000"/>
+    </linearGradient>
+
+    <filter id="bracketFx" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="5" result="sBlur"/>
+      <feOffset in="sBlur" dx="0" dy="8" result="sOff"/>
+      <feComponentTransfer in="sOff" result="shadow">
+        <feFuncA type="linear" slope="0.55"/>
+      </feComponentTransfer>
+
+      <feGaussianBlur in="SourceAlpha" stdDeviation="6" result="aBlur"/>
+      <feSpecularLighting in="aBlur" surfaceScale="14" specularConstant="1.35" specularExponent="32" lighting-color="#FFFFFF" result="spec">
+        <feDistantLight azimuth="135" elevation="50"/>
+      </feSpecularLighting>
+      <feComposite in="spec" in2="SourceAlpha" operator="in" result="specMasked"/>
+
+      <feMerge>
+        <feMergeNode in="shadow"/>
+        <feMergeNode in="SourceGraphic"/>
+        <feMergeNode in="specMasked"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1024" height="1024" rx="224" fill="url(#bg)"/>
+  <rect width="1024" height="500" rx="224" fill="url(#bgGloss)"/>
+  <rect x="2" y="2" width="1020" height="1020" rx="222" fill="none" stroke="#000000" stroke-width="1.5" stroke-opacity="0.08"/>
+
+  <g filter="url(#bracketFx)" fill="url(#bracketFill)">
+    <path d="M 124 332 L 124 204 A 80 80 0 0 1 204 124 L 332 124 A 28 28 0 0 1 332 180 L 204 180 A 24 24 0 0 0 180 204 L 180 332 A 28 28 0 0 1 124 332 Z"/>
+    <path d="M 900 332 L 900 204 A 80 80 0 0 0 820 124 L 692 124 A 28 28 0 0 0 692 180 L 820 180 A 24 24 0 0 1 844 204 L 844 332 A 28 28 0 0 0 900 332 Z"/>
+    <path d="M 900 692 L 900 820 A 80 80 0 0 1 820 900 L 692 900 A 28 28 0 0 1 692 844 L 820 844 A 24 24 0 0 0 844 820 L 844 692 A 28 28 0 0 1 900 692 Z"/>
+    <path d="M 124 692 L 124 820 A 80 80 0 0 0 204 900 L 332 900 A 28 28 0 0 0 332 844 L 204 844 A 24 24 0 0 1 180 820 L 180 692 A 28 28 0 0 0 124 692 Z"/>
+  </g>
+</svg>

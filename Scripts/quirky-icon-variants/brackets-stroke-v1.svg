@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#EBEBEF"/>
+    </linearGradient>
+    <linearGradient id="bgGloss" x1="0" y1="0" x2="0" y2="500" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+
+    <linearGradient id="bracketGrad" x1="0" y1="240" x2="0" y2="784" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4A4A53"/>
+      <stop offset="0.5" stop-color="#15151B"/>
+      <stop offset="1" stop-color="#000000"/>
+    </linearGradient>
+
+    <linearGradient id="bracketSheen" x1="0" y1="240" x2="0" y2="784" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+
+    <filter id="ds" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="18"/>
+      <feOffset dx="0" dy="22"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.42"/></feComponentTransfer>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1024" height="1024" rx="224" fill="url(#bg)"/>
+  <rect width="1024" height="500" rx="224" fill="url(#bgGloss)"/>
+  <rect x="2" y="2" width="1020" height="1020" rx="222" fill="none" stroke="#000000" stroke-width="1.5" stroke-opacity="0.08"/>
+
+  <g filter="url(#ds)">
+    <g stroke="url(#bracketGrad)" stroke-width="56" stroke-linecap="round" stroke-linejoin="round" fill="none">
+      <polyline points="152,400 152,240 312,240"/>
+      <polyline points="712,240 872,240 872,400"/>
+      <polyline points="872,624 872,784 712,784"/>
+      <polyline points="312,784 152,784 152,624"/>
+    </g>
+    <g stroke="url(#bracketSheen)" stroke-width="56" stroke-linecap="round" stroke-linejoin="round" fill="none">
+      <polyline points="152,400 152,240 312,240"/>
+      <polyline points="712,240 872,240 872,400"/>
+      <polyline points="872,624 872,784 712,784"/>
+      <polyline points="312,784 152,784 152,624"/>
+    </g>
+  </g>
+</svg>

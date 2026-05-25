@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#EAEAEE"/>
+    </linearGradient>
+    <linearGradient id="bgGloss" x1="0" y1="0" x2="0" y2="500" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+
+    <radialGradient id="sphereMain" cx="420" cy="370" r="450" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7C7C84"/>
+      <stop offset="0.16" stop-color="#48484F"/>
+      <stop offset="0.44" stop-color="#1E1E25"/>
+      <stop offset="0.78" stop-color="#07070C"/>
+      <stop offset="1" stop-color="#000000"/>
+    </radialGradient>
+
+    <radialGradient id="spec" cx="430" cy="350" r="150" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.92"/>
+      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0.20"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="specTight" cx="395" cy="320" r="42" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="1"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+
+    <radialGradient id="rimLight" cx="680" cy="720" r="220" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#A0A0A8" stop-opacity="0.32"/>
+      <stop offset="1" stop-color="#A0A0A8" stop-opacity="0"/>
+    </radialGradient>
+
+    <filter id="ds" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="22"/>
+      <feOffset dx="0" dy="28"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.45"/></feComponentTransfer>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1024" height="1024" rx="224" fill="url(#bg)"/>
+  <rect width="1024" height="500" rx="224" fill="url(#bgGloss)"/>
+  <rect x="2" y="2" width="1020" height="1020" rx="222" fill="none" stroke="#000000" stroke-width="1.5" stroke-opacity="0.08"/>
+
+  <g filter="url(#ds)">
+    <circle cx="512" cy="512" r="300" fill="url(#sphereMain)"/>
+    <circle cx="512" cy="512" r="300" fill="url(#rimLight)"/>
+    <ellipse cx="430" cy="350" rx="170" ry="115" fill="url(#spec)"/>
+    <ellipse cx="395" cy="320" rx="50" ry="32" fill="url(#specTight)"/>
+  </g>
+</svg>
