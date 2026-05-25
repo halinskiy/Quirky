@@ -1,3 +1,9 @@
+// SVG extraction depends on AppleScript to inject JS into Safari / Chrome /
+// other browsers. App Store sandbox forbids cross-app AppleScript without
+// temporary-exception entitlements Apple frequently rejects, so the MAS
+// build compiles this file as empty. Direct-distribution build keeps
+// full functionality.
+#if !MAS_BUILD
 import Cocoa
 
 final class SVGExtractor {
@@ -256,3 +262,4 @@ final class SVGExtractor {
         return CGFloat(val)
     }
 }
+#endif

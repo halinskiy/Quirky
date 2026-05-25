@@ -1944,6 +1944,7 @@ final class OverlayWindow {
         }
     }
 
+    #if !MAS_BUILD
     func setDOMElements(_ elements: [DOMExtractor.Element]) {
         let mainH = CGDisplayBounds(CGMainDisplayID()).height
         for window in windows {
@@ -1960,6 +1961,7 @@ final class OverlayWindow {
             view.needsDisplay = true
         }
     }
+    #endif
 
     func dismiss() {
         for window in windows { window.orderOut(nil) }

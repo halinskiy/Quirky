@@ -1,3 +1,8 @@
+// DOM extraction uses AppleScript / Accessibility API on a foreign app
+// (Safari, Chrome, Arc, …) to enumerate elements. Both routes are blocked
+// by the App Store sandbox without entitlements Apple typically denies,
+// so this file compiles as empty in the MAS build.
+#if !MAS_BUILD
 import Cocoa
 import ApplicationServices
 
@@ -217,3 +222,4 @@ final class DOMExtractor {
         }
     }
 }
+#endif

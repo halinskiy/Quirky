@@ -1,10 +1,22 @@
 import Cocoa
+#if !MAS_BUILD
 import Sparkle
+#endif
 
 // MARK: - Capture Mode
 
 enum CaptureMode: String, CaseIterable {
-    case ocr, hex, dom, svg, spx
+    case ocr
+    case hex
+    #if !MAS_BUILD
+    // DOM and SVG modes drive Safari/Chrome via Apple Events, which the
+    // Mac App Store sandbox doesn't grant without temporary-exception
+    // entitlements that Apple frequently denies. They ship only in the
+    // direct-distribution build.
+    case dom
+    case svg
+    #endif
+    case spx
     var displayName: String { rawValue.uppercased() }
 }
 
@@ -12,7 +24,9 @@ enum CaptureMode: String, CaseIterable {
 
 private enum EnabledModesStore {
     private static let key = "enabledModes"
-    private static let canonicalOrder: [CaptureMode] = [.ocr, .hex, .dom, .svg, .spx]
+    /// Source of truth for cycle order; tracks CaptureMode declaration
+    /// (so MAS builds without .dom/.svg get the right order automatically).
+    private static let canonicalOrder: [CaptureMode] = CaptureMode.allCases
 
     static func load() -> [CaptureMode] {
         let raw = UserDefaults.standard.array(forKey: key) as? [String]
@@ -34,7 +48,7 @@ private enum EnabledModesStore {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let overlay = OverlayWindow()
-    private var eventTap: CFMachPort?
+    private let hotkeys = HotkeyManager()
     private var isCapturing = false
     private var currentMode: CaptureMode = .ocr
     private var spxResumePending = false  // true while SPX is hidden-but-preserved
@@ -42,7 +56,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var previousApp: NSRunningApplication?
     private var preCapturedImages: [(displayID: CGDirectDisplayID, bounds: CGRect, image: CGImage)] = []
 
+    #if !MAS_BUILD
     private let updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+    #endif
     private var modeTogglesView: ModeTogglesView?
     private let modeSwitcher = FloatingModeSwitcher()
 
@@ -55,37 +71,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // On macOS 15+, CGPreflightScreenCaptureAccess() may return true without registering in the new TCC list.
         PermissionManager.registerWithScreenCaptureKit()
         if !PermissionManager.hasScreenRecordingPermission { PermissionManager.requestScreenRecordingPermission() }
-        if !PermissionManager.hasAccessibilityPermission { PermissionManager.requestAccessibilityPermission() }
-        installEventTap()
+        setupHotkeys()
         overlay.onSPXPreserveHide = { [weak self] in self?.handleSPXPreserveHide() }
         modeSwitcher.delegate = self
     }
 
-    /// True while SPX is the active capture mode (opaque or ghost). Used by
-    /// the event tap to decide whether to swallow Esc system-wide.
-    fileprivate func shouldInterceptEscape() -> Bool {
-        isCapturing && currentMode == .spx
+    private func setupHotkeys() {
+        hotkeys.onCapture = { [weak self] in self?.handleCaptureHotkey() }
+        hotkeys.onTab     = { [weak self] in self?.handleTabCycle() }
+        hotkeys.onEscape  = { [weak self] in self?.handleEscapeWhileSPXActive() }
+        hotkeys.registerCaptureHotkey()
     }
 
-    /// Tab cycles through enabled modes while a capture session is active,
-    /// as a single-key alternative to ⌘⇧1. Only consumes the event when
-    /// there's actually something to cycle to.
-    fileprivate func shouldHandleTabCycle() -> Bool {
-        guard isCapturing else { return false }
-        return EnabledModesStore.load().count > 1
+    /// Sync the per-mode conditional hotkeys (Tab / Esc) with current state.
+    /// Tab is live only during capture with ≥2 enabled modes (so we don't
+    /// hold the bare Tab key system-wide). Esc is live only when SPX is the
+    /// active capture mode (so it can dismiss the click-through ghost
+    /// overlay; in opaque modes OverlayWindow itself is the key window and
+    /// handles Esc via keyDown).
+    private func syncStateHotkeys() {
+        let tabLive = isCapturing && EnabledModesStore.load().count > 1
+        let escLive = isCapturing && currentMode == .spx
+        hotkeys.setTabHotkeyActive(tabLive)
+        hotkeys.setEscapeHotkeyActive(escLive)
     }
 
-    fileprivate func handleTabCycle() {
-        cycleMode()
-    }
-
-    /// Tap-level Esc dispatcher — closes the overlay and wipes preserved
+    /// Carbon-hotkey Esc dispatcher — closes the overlay and wipes preserved
     /// segments, mirroring the view's keyDown handler. Reachable even when
     /// the overlay is in ghost mode (not the key window).
     fileprivate func handleEscapeWhileSPXActive() {
+        guard isCapturing, currentMode == .spx else { return }
         overlay.dismiss()
         cancelCapture()
         updateStatusLabel(nil)
+    }
+
+    fileprivate func handleTabCycle() {
+        guard isCapturing, EnabledModesStore.load().count > 1 else { return }
+        cycleMode()
     }
 
     /// Called when SPX is dismissed via click — overlay closes but the segments
@@ -177,75 +200,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
+        #if !MAS_BUILD
+        // Sparkle drives auto-updates for the direct-distribution build;
+        // the Mac App Store build uses the system updater (App Store.app)
+        // and forbids bundled updaters.
         let updateItem = NSMenuItem(title: "Check for Updates…", action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)), keyEquivalent: "u")
         updateItem.target = updaterController
         menu.addItem(updateItem)
 
         menu.addItem(.separator())
+        #endif
 
         let quitItem = NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
 
         statusItem.menu = menu
-    }
-
-    // MARK: Global Hotkey
-
-    private func installEventTap() {
-        let mask: CGEventMask = (1 << CGEventType.keyDown.rawValue)
-        let selfPtr = Unmanaged.passUnretained(self).toOpaque()
-
-        guard let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: .defaultTap,
-            eventsOfInterest: mask,
-            callback: { proxy, type, event, refcon -> Unmanaged<CGEvent>? in
-                let app = Unmanaged<AppDelegate>.fromOpaque(refcon!).takeUnretainedValue()
-                guard type == .keyDown else {
-                    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-                        if let tap = app.eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
-                    }
-                    return Unmanaged.passUnretained(event)
-                }
-                let flags = event.flags
-                let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
-                let hasCmd = flags.contains(.maskCommand)
-                let hasShift = flags.contains(.maskShift)
-                let hasExtra = !flags.intersection([.maskControl, .maskAlternate]).isEmpty
-                if hasCmd && hasShift && !hasExtra && keyCode == 18 {
-                    DispatchQueue.main.async { app.handleCaptureHotkey() }
-                    return nil
-                }
-                // Esc while SPX is active — swallow it system-wide so the
-                // ghost overlay can exit even though it's not the key window
-                // (and so opaque-mode Esc never leaks to the app underneath).
-                if !hasCmd && !hasShift && !hasExtra && keyCode == 53 && app.shouldInterceptEscape() {
-                    DispatchQueue.main.async { app.handleEscapeWhileSPXActive() }
-                    return nil
-                }
-                // Tab while capturing — cycle to the next enabled mode without
-                // chording. Only consumed when ≥2 modes are enabled, so Tab
-                // outside capture (and capture with a single enabled mode)
-                // passes through to whatever app is focused.
-                if !hasCmd && !hasShift && !hasExtra && keyCode == 48 && app.shouldHandleTabCycle() {
-                    DispatchQueue.main.async { app.handleTabCycle() }
-                    return nil
-                }
-                return Unmanaged.passUnretained(event)
-            },
-            userInfo: selfPtr
-        ) else {
-            NSLog("Quirky: Failed to create CGEvent tap — Accessibility permission required")
-            DispatchQueue.main.async { PermissionManager.showAccessibilityDeniedAlert() }
-            return
-        }
-
-        self.eventTap = tap
-        let runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
     }
 
     // MARK: Capture Flow
@@ -290,6 +260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func switchActiveCaptureMode(to mode: CaptureMode, silent: Bool = false) {
         currentMode = mode
         modeSwitcher.setCurrentMode(mode)
+        syncStateHotkeys()
         switch mode {
         case .ocr:
             overlay.switchToOCRMode()
@@ -302,6 +273,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             updateStatusLabel("HEX")
             if !silent { ToastWindow.show("HEX") }
+        #if !MAS_BUILD
         case .dom:
             overlay.switchToDOMMode { [weak self] label in
                 self?.handleDOMElementPicked(label)
@@ -329,6 +301,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             SVGExtractor.getSVGBoundingBoxes(from: previousApp) { [weak self] boxes in
                 self?.overlay.setSVGBoxes(boxes)
             }
+        #endif
         case .spx:
             overlay.switchToSPXMode { [weak self] label in
                 self?.handleSPXSizePicked(label)
@@ -346,6 +319,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         preCaptureScreens()
         isCapturing = true
         previousApp = NSWorkspace.shared.frontmostApplication
+        syncStateHotkeys()
 
         let enabled = EnabledModesStore.load()
         if enabled.count >= 2 {
@@ -362,6 +336,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.cancelCapture()
             })
 
+        #if !MAS_BUILD
         case .svg:
             updateStatusLabel("SVG")
             overlay.showForSVG(screenImages: screenImagesForOverlay, onComplete: { [weak self] rect in
@@ -373,6 +348,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             SVGExtractor.getSVGBoundingBoxes(from: previousApp) { [weak self] boxes in
                 self?.overlay.setSVGBoxes(boxes)
             }
+        #endif
 
         case .hex:
             updateStatusLabel("HEX")
@@ -383,6 +359,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.cancelCapture()
             })
 
+        #if !MAS_BUILD
         case .dom:
             updateStatusLabel("DOM")
             overlay.showForDOM(screenImages: screenImagesForOverlay, onElementPicked: { [weak self] label in
@@ -405,6 +382,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 self.overlay.setDOMElements(elements)
             }
+        #endif
 
         case .spx:
             updateStatusLabel("SPX")
@@ -423,11 +401,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         spxIsGhost = false
         preCapturedImages = []
         modeSwitcher.hide()
+        syncStateHotkeys()
         smartReturnFocus()
     }
 
     private func handleColorPicked(_ hex: String) {
         isCapturing = false
+        syncStateHotkeys()
         updateStatusLabel(nil)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(hex, forType: .string)
@@ -435,17 +415,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         smartReturnFocus()
     }
 
+    #if !MAS_BUILD
     private func handleDOMElementPicked(_ label: String) {
         isCapturing = false
+        syncStateHotkeys()
         updateStatusLabel(nil)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(label, forType: .string)
         ToastWindow.show(label)
         smartReturnFocus()
     }
+    #endif
 
     private func handleSPXSizePicked(_ label: String) {
         isCapturing = false
+        syncStateHotkeys()
         updateStatusLabel(nil)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(label, forType: .string)
@@ -455,9 +439,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleCaptureComplete(_ cgRect: CGRect) {
         switch currentMode {
-        case .svg: performSVGExtraction(on: cgRect)
         case .ocr, .hex: performPreCapturedOCR(on: cgRect)
+        #if !MAS_BUILD
+        case .svg: performSVGExtraction(on: cgRect)
         case .dom: break // DOM mode picks via onElementPicked, never triggers onComplete
+        #endif
         case .spx: break // SPX mode picks via onSizePicked, never triggers onComplete
         }
     }
@@ -497,6 +483,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func performPreCapturedOCR(on rect: CGRect) {
         isCapturing = false
+        syncStateHotkeys()
         guard let cropped = cropPreCapture(to: rect) else {
             ToastWindow.show("Capture failed")
             preCapturedImages = []
@@ -519,11 +506,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: SVG
 
+    #if !MAS_BUILD
     private func performSVGExtraction(on rect: CGRect) {
         let browserApp = previousApp
         SVGExtractor.extractSVGs(in: rect, from: browserApp) { [weak self] svgs in
             guard let self else { return }
             self.isCapturing = false
+            self.syncStateHotkeys()
             if svgs.isEmpty { ToastWindow.show("No SVGs found") }
             else {
                 SVGExtractor.copyToClipboard(svgs)
@@ -532,6 +521,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.smartReturnFocus()
         }
     }
+    #endif
 
     // MARK: Focus
 

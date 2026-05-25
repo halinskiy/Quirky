@@ -19,6 +19,7 @@
 		AA0000000000000000000014 /* DOMExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000014 /* DOMExtractor.swift */; };
 		AA0000000000000000000015 /* SPXAnalyzer.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000015 /* SPXAnalyzer.swift */; };
 		AA0000000000000000000016 /* FloatingModeSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000016 /* FloatingModeSwitcher.swift */; };
+		AA0000000000000000000017 /* HotkeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000017 /* HotkeyManager.swift */; };
 		AA0000000000000000000020 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = SP0000000000000000000002 /* Sparkle */; };
 /* End PBXBuildFile section */
 
@@ -37,6 +38,9 @@
 		BB0000000000000000000014 /* DOMExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DOMExtractor.swift; sourceTree = "<group>"; };
 		BB0000000000000000000015 /* SPXAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SPXAnalyzer.swift; sourceTree = "<group>"; };
 		BB0000000000000000000016 /* FloatingModeSwitcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingModeSwitcher.swift; sourceTree = "<group>"; };
+		BB0000000000000000000017 /* HotkeyManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyManager.swift; sourceTree = "<group>"; };
+		BB0000000000000000000018 /* Info-MAS.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "Info-MAS.plist"; sourceTree = "<group>"; };
+		BB0000000000000000000019 /* Quirky-MAS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Quirky-MAS.entitlements"; sourceTree = "<group>"; };
 		BB000000000000000000000C /* Quirky.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Quirky.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -74,9 +78,12 @@
 				BB0000000000000000000014 /* DOMExtractor.swift */,
 				BB0000000000000000000015 /* SPXAnalyzer.swift */,
 				BB0000000000000000000016 /* FloatingModeSwitcher.swift */,
+				BB0000000000000000000017 /* HotkeyManager.swift */,
 				BB0000000000000000000009 /* Assets.xcassets */,
 				BB000000000000000000000A /* Info.plist */,
 				BB000000000000000000000B /* Quirky.entitlements */,
+				BB0000000000000000000018 /* Info-MAS.plist */,
+				BB0000000000000000000019 /* Quirky-MAS.entitlements */,
 			);
 			path = Quirky;
 			sourceTree = "<group>";
@@ -99,6 +106,7 @@
 				CC0000000000000000000001 /* Sources */,
 				CC0000000000000000000003 /* Frameworks */,
 				CC0000000000000000000002 /* Resources */,
+				CC0000000000000000000007 /* Strip Sparkle in MAS build */,
 			);
 			buildRules = (
 			);
@@ -153,6 +161,28 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		CC0000000000000000000007 /* Strip Sparkle in MAS build */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Strip Sparkle in MAS build";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# Mac App Store forbids third-party updaters. The Sparkle framework\n# is still in the SPM dependency list (so the Direct build keeps\n# auto-update support), but for the MAS configuration we delete the\n# framework from the embedded bundle and re-sign the result.\nif [ \"$CONFIGURATION\" != \"MAS Release\" ]; then\n  exit 0\nfi\nSPARKLE=\"$CODESIGNING_FOLDER_PATH/Contents/Frameworks/Sparkle.framework\"\nif [ -d \"$SPARKLE\" ]; then\n  echo \"==> MAS build: removing $SPARKLE\"\n  rm -rf \"$SPARKLE\"\nfi\n# Re-sign the bundle so the embedded code-directory hashes match the\n# now-smaller bundle layout. Skipped for ad-hoc / unsigned local builds\n# (where EXPANDED_CODE_SIGN_IDENTITY is empty or '-').\nif [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ] && [ \"$EXPANDED_CODE_SIGN_IDENTITY\" != \"-\" ]; then\n  /usr/bin/codesign --force --options=runtime --timestamp \\\n    --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \\\n    --entitlements \"$CODE_SIGN_ENTITLEMENTS\" \\\n    \"$CODESIGNING_FOLDER_PATH\"\nelse\n  echo \"==> MAS build: skipping re-sign (ad-hoc/unsigned local build)\"\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		CC0000000000000000000001 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -169,6 +199,7 @@
 				AA0000000000000000000014 /* DOMExtractor.swift in Sources */,
 				AA0000000000000000000015 /* SPXAnalyzer.swift in Sources */,
 				AA0000000000000000000016 /* FloatingModeSwitcher.swift in Sources */,
+				AA0000000000000000000017 /* HotkeyManager.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -338,6 +369,54 @@
 			};
 			name = Release;
 		};
+		AB0000000000000000000005 /* MAS Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = "MAS Release";
+		};
+		AB0000000000000000000006 /* MAS Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "Quirky/Quirky-MAS.entitlements";
+				CODE_SIGN_IDENTITY = "Apple Distribution";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = PDB9JGGX74;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "Quirky/Info-MAS.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				OTHER_CODE_SIGN_FLAGS = "--timestamp";
+				PRODUCT_BUNDLE_IDENTIFIER = com.threempq.quirky;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "Quirky MAS Distribution";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "MAS_BUILD";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = "MAS Release";
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -346,6 +425,7 @@
 			buildConfigurations = (
 				AB0000000000000000000001 /* Debug */,
 				AB0000000000000000000002 /* Release */,
+				AB0000000000000000000005 /* MAS Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
@@ -355,6 +435,7 @@
 			buildConfigurations = (
 				AB0000000000000000000003 /* Debug */,
 				AB0000000000000000000004 /* Release */,
+				AB0000000000000000000006 /* MAS Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
