@@ -27,7 +27,7 @@ final class PermissionManager {
     static func showPermissionDeniedAlert() {
         let alert = NSAlert()
         alert.messageText = "Screen Recording Permission Required"
-        alert.informativeText = "ScreenOCR needs Screen Recording permission to capture screen regions for text extraction.\n\nPlease grant access in System Settings → Privacy & Security → Screen Recording."
+        alert.informativeText = "Quirky needs Screen Recording permission to capture screen regions for text, color, element, SVG, and pixel-measurement extraction.\n\nPlease grant access in System Settings → Privacy & Security → Screen Recording."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Cancel")
@@ -54,7 +54,7 @@ final class PermissionManager {
     static func showAccessibilityDeniedAlert() {
         let alert = NSAlert()
         alert.messageText = "Accessibility Permission Required"
-        alert.informativeText = "ScreenOCR needs Accessibility permission for global hotkeys (⌘⇧1/2) to work everywhere — over menus, modals, and other apps.\n\nPlease grant access in System Settings → Privacy & Security → Accessibility."
+        alert.informativeText = "Quirky needs Accessibility permission for the global hotkey (⌘⇧1) to work everywhere — over menus, modals, and other apps.\n\nPlease grant access in System Settings → Privacy & Security → Accessibility."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Cancel")

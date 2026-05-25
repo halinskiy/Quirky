@@ -44,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private let updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
     private var modeTogglesView: ModeTogglesView?
+    private let modeSwitcher = FloatingModeSwitcher()
 
     // MARK: Lifecycle
 
@@ -57,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !PermissionManager.hasAccessibilityPermission { PermissionManager.requestAccessibilityPermission() }
         installEventTap()
         overlay.onSPXPreserveHide = { [weak self] in self?.handleSPXPreserveHide() }
+        modeSwitcher.delegate = self
     }
 
     /// True while SPX is the active capture mode (opaque or ghost). Used by
@@ -109,7 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            if let image = NSImage(systemSymbolName: "text.viewfinder", accessibilityDescription: "Screen OCR") {
+            if let image = NSImage(systemSymbolName: "text.viewfinder", accessibilityDescription: "Quirky") {
                 image.isTemplate = true
                 button.image = image
                 button.imagePosition = .imageLeading
@@ -215,7 +217,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             userInfo: selfPtr
         ) else {
-            NSLog("ScreenOCR: Failed to create CGEvent tap — Accessibility permission required")
+            NSLog("Quirky: Failed to create CGEvent tap — Accessibility permission required")
             DispatchQueue.main.async { PermissionManager.showAccessibilityDeniedAlert() }
             return
         }
@@ -230,8 +232,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func handleCaptureHotkey() {
         if isCapturing {
-            // SPX is exclusive: in SPX the hotkey toggles ghost/opaque instead
-            // of cycling modes (no other mode is enabled alongside SPX anyway).
+            // In SPX the hotkey toggles ghost/opaque overlay; mode-switching
+            // is now done via the floating mode switcher (or cycle).
             if currentMode == .spx {
                 spxIsGhost.toggle()
                 overlay.setSPXGhost(spxIsGhost)
@@ -267,6 +269,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func switchActiveCaptureMode(to mode: CaptureMode, silent: Bool = false) {
         currentMode = mode
+        modeSwitcher.setCurrentMode(mode)
         switch mode {
         case .ocr:
             overlay.switchToOCRMode()
@@ -323,6 +326,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         preCaptureScreens()
         isCapturing = true
         previousApp = NSWorkspace.shared.frontmostApplication
+
+        let enabled = EnabledModesStore.load()
+        if enabled.count >= 2 {
+            modeSwitcher.show(enabled: enabled, current: currentMode, anchorScreen: NSScreen.main)
+        } else {
+            modeSwitcher.hide()
+        }
 
         switch currentMode {
         case .ocr:
@@ -392,6 +402,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         spxResumePending = false  // Esc / mode-switch wipes preserved SPX
         spxIsGhost = false
         preCapturedImages = []
+        modeSwitcher.hide()
         smartReturnFocus()
     }
 
@@ -506,6 +517,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func smartReturnFocus() {
         updateStatusLabel(nil)
+        modeSwitcher.hide()
         if NSApp.isActive { previousApp?.activate() }
         previousApp = nil
     }
@@ -517,13 +529,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if enabled.contains(mode) {
             guard enabled.count > 1 else { return }
             enabled.removeAll { $0 == mode }
-        } else if mode == .spx {
-            // SPX is exclusive — enabling it shuts off everything else.
-            enabled = [.spx]
-        } else if enabled.contains(.spx) {
-            // Enabling any non-SPX mode while SPX is on switches into a
-            // non-SPX configuration with just the requested mode.
-            enabled = [mode]
         } else {
             enabled.append(mode)
         }
@@ -542,6 +547,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func quitApp() { NSApp.terminate(nil) }
+}
+
+// MARK: - FloatingModeSwitcherDelegate
+
+extension AppDelegate: FloatingModeSwitcherDelegate {
+    func floatingSwitcher(_ switcher: FloatingModeSwitcher, didSelectMode mode: CaptureMode) {
+        guard isCapturing, mode != currentMode else { return }
+        // Exiting SPX clears its ghost state so a future SPX session starts opaque.
+        if currentMode == .spx && mode != .spx {
+            spxIsGhost = false
+            overlay.setSPXGhost(false)
+        }
+        switchActiveCaptureMode(to: mode, silent: true)
+    }
 }
 
 // MARK: - Mode Toggles View
@@ -615,36 +634,27 @@ final class ModeTogglesView: NSView {
         let offFillHover = NSColor(deviceRed: 0.50, green: 0.50, blue: 0.50, alpha: 0.12)
         let onTextColor = CGColor(red: 0.06, green: 0.06, blue: 0.06, alpha: 1)
         let offTextColor = CGColor(red: 0.55, green: 0.55, blue: 0.55, alpha: 1)
-        // SPX is exclusive — when it's on, non-SPX chips are incompatible;
-        // when any non-SPX mode is on, the SPX chip is incompatible.
-        let spxActive = enabledModes.contains(.spx)
 
         for (i, mode) in CaptureMode.allCases.enumerated() {
             let r = rect(forIndex: i)
             let path = NSBezierPath(roundedRect: r, xRadius: 7, yRadius: 7)
             let isOn = enabledModes.contains(mode)
             let isHovered = hoveredIndex == i
-            let isIncompatible = !isOn && (spxActive != (mode == .spx))
-            let dim: CGFloat = isIncompatible ? 0.35 : 1.0
 
             if isOn {
                 (isHovered ? onFillHover : onFill).setFill()
                 path.fill()
             } else {
                 if isHovered {
-                    offFillHover.withAlphaComponent(0.12 * dim).setFill()
+                    offFillHover.setFill()
                     path.fill()
                 }
-                offStroke.withAlphaComponent(0.45 * dim).setStroke()
+                offStroke.setStroke()
                 path.lineWidth = 1
                 path.stroke()
             }
 
-            let textColor: CGColor
-            if isOn { textColor = onTextColor }
-            else { textColor = CGColor(red: 0.55, green: 0.55, blue: 0.55,
-                                       alpha: 1.0 * dim) }
-            _ = offTextColor
+            let textColor: CGColor = isOn ? onTextColor : offTextColor
 
             let attrs: [NSAttributedString.Key: Any] = [
                 kCTFontAttributeName as NSAttributedString.Key: Self.labelFont,

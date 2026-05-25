@@ -1,60 +1,40 @@
 <?xml version="1.0" standalone="yes"?>
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/" version="2.0">
     <channel>
-        <title>ScreenOCR Updates</title>
+        <title>Quirky Updates</title>
         <language>en</language>
         <!--
             To publish a new release:
-            1. Build Release in Xcode (Product → Archive → Distribute → Direct Distribution)
-            2. Zip the .app:  cd build && zip -ry ScreenOCR-1.1.zip ScreenOCR.app
-            3. Sign the zip:  sparkle/bin/sign_update ScreenOCR-1.1.zip
-            4. Copy the edSignature and length into the <enclosure> below
-            5. Upload the .zip to GitHub Release and update the url
-            6. Commit the updated appcast.xml
-
-            sign_update path:
-            ~/Library/Developer/Xcode/DerivedData/ScreenOCR-*/SourcePackages/artifacts/sparkle/Sparkle/bin/sign_update
+            1. Bump MARKETING_VERSION and CURRENT_PROJECT_VERSION in Quirky.xcodeproj (or via agvtool).
+            2. Run Scripts/notarize.sh — it archives, signs with Developer ID, notarizes, staples,
+               and produces build/Quirky-<version>.zip.
+            3. Sign the zip with Sparkle:
+               ~/Library/Developer/Xcode/DerivedData/Quirky-*/SourcePackages/artifacts/sparkle/Sparkle/bin/sign_update build/Quirky-<version>.zip
+            4. Copy the edSignature and length into a new <item> below.
+            5. gh release create v<version> build/Quirky-<version>.zip
+            6. Commit the updated appcast.xml.
         -->
         <item>
-            <title>Version 1.1</title>
-            <pubDate>Wed, 26 Mar 2026 12:00:00 +0000</pubDate>
-            <sparkle:version>2</sparkle:version>
-            <sparkle:shortVersionString>1.1</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <description><![CDATA[
-                <h2>v1.1</h2>
-                <ul>
-                    <li>Fix: thin line selections now capture text correctly</li>
-                    <li>Sparkle auto-updates</li>
-                    <li>DMG installer with drag-to-install layout</li>
-                </ul>
-            ]]></description>
-            <enclosure
-                url="https://github.com/halinskiy/ScreenOCR/releases/download/v1.1/ScreenOCR.zip"
-                type="application/octet-stream"
-                sparkle:edSignature="/vHolS85ElmRi167L7aSNFb77MEQILJk/M1uF/oAmbjGqkpZRu6cHeNAdAv4lsBVQgRjEbfq24Nb3BNK9d3NBg=="
-                length="1259076"
-            />
-        </item>
-        <item>
-            <title>Version 1.0</title>
-            <pubDate>Wed, 26 Mar 2026 00:00:00 +0000</pubDate>
+            <title>Version 1.0 — Quirky launch</title>
+            <pubDate>Sun, 25 May 2026 12:00:00 +0000</pubDate>
             <sparkle:version>1</sparkle:version>
             <sparkle:shortVersionString>1.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
             <description><![CDATA[
-                <h2>Initial Release</h2>
+                <h2>Quirky 1.0</h2>
+                <p>ScreenOCR is now Quirky — fully rebranded, signed with a Developer ID, and notarized by Apple.</p>
                 <ul>
-                    <li>OCR screen capture (⌘⇧1)</li>
-                    <li>SVG extraction from browsers (⌘⇧2)</li>
-                    <li>Customizable highlight colors</li>
+                    <li>New: floating mode-switcher pill — appears whenever two or more modes are enabled, parks at the nearest screen edge as an arrow tab.</li>
+                    <li>SPX (pixel measurement) now coexists with OCR / HEX / DOM / SVG instead of being exclusive.</li>
+                    <li>Hardened runtime + Developer ID signing + Apple notarization — install without quarantine warnings.</li>
+                    <li>All previous SPX work preserved: free-drag → magnetic snap, edge & corner resize handles, hover-reveal close button, ghost-mode click-through.</li>
                 </ul>
             ]]></description>
             <enclosure
-                url="https://github.com/halinskiy/ScreenOCR/releases/download/v1.0/ScreenOCR.zip"
+                url="https://github.com/halinskiy/Quirky/releases/download/v1.0/Quirky-1.0.zip"
                 type="application/octet-stream"
-                sparkle:edSignature="k2PtjPGl5WZNMEgZ0JWxLPFAjOaegGpmO4QHxYqGxh0Df6ZU6TQ7bE1hUYDZpGarfCKhcorUHe0569A1xpaiAA=="
-                length="1263135"
+                sparkle:edSignature="PENDING"
+                length="0"
             />
         </item>
     </channel>

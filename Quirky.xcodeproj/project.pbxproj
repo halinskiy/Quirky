@@ -18,6 +18,7 @@
 		AA0000000000000000000012 /* SVGExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000012 /* SVGExtractor.swift */; };
 		AA0000000000000000000014 /* DOMExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000014 /* DOMExtractor.swift */; };
 		AA0000000000000000000015 /* SPXAnalyzer.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000015 /* SPXAnalyzer.swift */; };
+		AA0000000000000000000016 /* FloatingModeSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000016 /* FloatingModeSwitcher.swift */; };
 		AA0000000000000000000020 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = SP0000000000000000000002 /* Sparkle */; };
 /* End PBXBuildFile section */
 
@@ -30,12 +31,13 @@
 		BB0000000000000000000008 /* PermissionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionManager.swift; sourceTree = "<group>"; };
 		BB0000000000000000000009 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		BB000000000000000000000A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		BB000000000000000000000B /* ScreenOCR.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ScreenOCR.entitlements; sourceTree = "<group>"; };
+		BB000000000000000000000B /* Quirky.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Quirky.entitlements; sourceTree = "<group>"; };
 		BB0000000000000000000011 /* ToastWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToastWindow.swift; sourceTree = "<group>"; };
 		BB0000000000000000000012 /* SVGExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SVGExtractor.swift; sourceTree = "<group>"; };
 		BB0000000000000000000014 /* DOMExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DOMExtractor.swift; sourceTree = "<group>"; };
 		BB0000000000000000000015 /* SPXAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SPXAnalyzer.swift; sourceTree = "<group>"; };
-		BB000000000000000000000C /* ScreenOCR.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ScreenOCR.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		BB0000000000000000000016 /* FloatingModeSwitcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingModeSwitcher.swift; sourceTree = "<group>"; };
+		BB000000000000000000000C /* Quirky.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Quirky.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -53,12 +55,12 @@
 		DD0000000000000000000001 /* root */ = {
 			isa = PBXGroup;
 			children = (
-				DD0000000000000000000002 /* ScreenOCR */,
+				DD0000000000000000000002 /* Quirky */,
 				DD0000000000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
 		};
-		DD0000000000000000000002 /* ScreenOCR */ = {
+		DD0000000000000000000002 /* Quirky */ = {
 			isa = PBXGroup;
 			children = (
 				BB0000000000000000000001 /* main.swift */,
@@ -71,17 +73,18 @@
 				BB0000000000000000000012 /* SVGExtractor.swift */,
 				BB0000000000000000000014 /* DOMExtractor.swift */,
 				BB0000000000000000000015 /* SPXAnalyzer.swift */,
+				BB0000000000000000000016 /* FloatingModeSwitcher.swift */,
 				BB0000000000000000000009 /* Assets.xcassets */,
 				BB000000000000000000000A /* Info.plist */,
-				BB000000000000000000000B /* ScreenOCR.entitlements */,
+				BB000000000000000000000B /* Quirky.entitlements */,
 			);
-			path = ScreenOCR;
+			path = Quirky;
 			sourceTree = "<group>";
 		};
 		DD0000000000000000000003 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				BB000000000000000000000C /* ScreenOCR.app */,
+				BB000000000000000000000C /* Quirky.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -89,9 +92,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		EE0000000000000000000001 /* ScreenOCR */ = {
+		EE0000000000000000000001 /* Quirky */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = FF0000000000000000000002 /* Build configuration list for PBXNativeTarget "ScreenOCR" */;
+			buildConfigurationList = FF0000000000000000000002 /* Build configuration list for PBXNativeTarget "Quirky" */;
 			buildPhases = (
 				CC0000000000000000000001 /* Sources */,
 				CC0000000000000000000003 /* Frameworks */,
@@ -101,12 +104,12 @@
 			);
 			dependencies = (
 			);
-			name = ScreenOCR;
+			name = Quirky;
 			packageProductDependencies = (
 				SP0000000000000000000002 /* Sparkle */,
 			);
-			productName = ScreenOCR;
-			productReference = BB000000000000000000000C /* ScreenOCR.app */;
+			productName = Quirky;
+			productReference = BB000000000000000000000C /* Quirky.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -118,7 +121,7 @@
 				BuildIndependentTargetsInParallel = 1;
 				LastUpgradeCheck = 1500;
 			};
-			buildConfigurationList = FF0000000000000000000001 /* Build configuration list for PBXProject "ScreenOCR" */;
+			buildConfigurationList = FF0000000000000000000001 /* Build configuration list for PBXProject "Quirky" */;
 			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
@@ -134,7 +137,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				EE0000000000000000000001 /* ScreenOCR */,
+				EE0000000000000000000001 /* Quirky */,
 			);
 		};
 /* End PBXProject section */
@@ -165,6 +168,7 @@
 				AA0000000000000000000012 /* SVGExtractor.swift in Sources */,
 				AA0000000000000000000014 /* DOMExtractor.swift in Sources */,
 				AA0000000000000000000015 /* SPXAnalyzer.swift in Sources */,
+				AA0000000000000000000016 /* FloatingModeSwitcher.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -287,19 +291,21 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = ScreenOCR/ScreenOCR.entitlements;
-				CODE_SIGN_IDENTITY = "ScreenOCR Dev";
-				CODE_SIGN_STYLE = Manual;
+				CODE_SIGN_ENTITLEMENTS = Quirky/Quirky.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = PDB9JGGX74;
+				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = ScreenOCR/Info.plist;
+				INFOPLIST_FILE = Quirky/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.screenocr.app;
+				PRODUCT_BUNDLE_IDENTIFIER = com.threempq.quirky;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
@@ -310,19 +316,22 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = ScreenOCR/ScreenOCR.entitlements;
-				CODE_SIGN_IDENTITY = "ScreenOCR Dev";
+				CODE_SIGN_ENTITLEMENTS = Quirky/Quirky.entitlements;
+				CODE_SIGN_IDENTITY = "Developer ID Application";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = PDB9JGGX74;
+				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = ScreenOCR/Info.plist;
+				INFOPLIST_FILE = Quirky/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.screenocr.app;
+				OTHER_CODE_SIGN_FLAGS = "--timestamp --options=runtime";
+				PRODUCT_BUNDLE_IDENTIFIER = com.threempq.quirky;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
@@ -332,7 +341,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		FF0000000000000000000001 /* Build configuration list for PBXProject "ScreenOCR" */ = {
+		FF0000000000000000000001 /* Build configuration list for PBXProject "Quirky" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				AB0000000000000000000001 /* Debug */,
@@ -341,7 +350,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		FF0000000000000000000002 /* Build configuration list for PBXNativeTarget "ScreenOCR" */ = {
+		FF0000000000000000000002 /* Build configuration list for PBXNativeTarget "Quirky" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				AB0000000000000000000003 /* Debug */,
