@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 800" width="1080" height="800">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="800" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FCFCFE"/>
+      <stop offset="0.55" stop-color="#F1F1F6"/>
+      <stop offset="1" stop-color="#E2E2EA"/>
+    </linearGradient>
+    <linearGradient id="arrowGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#1A1722" stop-opacity="0.85"/>
+      <stop offset="1" stop-color="#1A1722"/>
+    </linearGradient>
+    <radialGradient id="spot" cx="540" cy="120" r="380" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.85"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1080" height="800" fill="url(#bg)"/>
+  <rect width="1080" height="800" fill="url(#spot)"/>
+
+  <text x="540" y="142" text-anchor="middle"
+        font-family="Helvetica, Arial, sans-serif"
+        font-size="64" font-weight="700" fill="#0F0E18" letter-spacing="-1">Quirky</text>
+  <text x="540" y="186" text-anchor="middle"
+        font-family="Helvetica, Arial, sans-serif"
+        font-size="22" font-weight="400" fill="#5A5A66">Five-mode capture suite for macOS</text>
+
+  <g stroke="url(#arrowGrad)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <line x1="440" y1="400" x2="625" y2="400"/>
+    <polyline points="595,368 645,400 595,432"/>
+  </g>
+
+  <g opacity="0.55">
+    <circle cx="468" cy="400" r="3" fill="#1A1722"/>
+    <circle cx="488" cy="400" r="3" fill="#1A1722"/>
+    <circle cx="508" cy="400" r="3" fill="#1A1722"/>
+  </g>
+
+  <text x="540" y="624" text-anchor="middle"
+        font-family="Helvetica, Arial, sans-serif"
+        font-size="28" font-weight="500" fill="#1F1E2A">Drag Quirky → Applications</text>
+  <text x="540" y="660" text-anchor="middle"
+        font-family="Helvetica, Arial, sans-serif"
+        font-size="16" fill="#6E6E7C">No quarantine warning — install and launch</text>
+
+  <text x="540" y="752" text-anchor="middle"
+        font-family="Helvetica, Arial, sans-serif"
+        font-size="14" fill="#9A9AA8">Signed with Developer ID · Notarized by Apple</text>
+</svg>

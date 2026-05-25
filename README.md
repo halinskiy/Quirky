@@ -30,14 +30,14 @@ Enable two or more modes in the menu-bar popover. Press <kbd>⌘⇧1</kbd> — a
 
 ## Installation
 
-1. Download the latest `.zip` from [Releases](../../releases)
-2. Unzip and drag **Quirky.app** to **Applications**
+1. Download the latest **Quirky.dmg** from [Releases](../../releases)
+2. Open the disk image and drag **Quirky.app** into **Applications**
 3. Launch and grant the required permissions:
    - **Screen Recording** — for capture across every mode
    - **Accessibility** — for the global hotkey
    - **Automation** — for SVG and DOM extraction from browsers (prompted on first use)
 
-Quirky is signed with a Developer ID Application certificate and notarized by Apple — no quarantine bypass or `xattr` removal needed.
+Quirky is signed with a Developer ID Application certificate and notarized by Apple — no quarantine bypass or `xattr` removal needed. A `.zip` of the bundle is also published alongside the DMG for Sparkle auto-updates.
 
 ## Building from source
 
