@@ -20,6 +20,17 @@ final class FloatingModeSwitcher {
     static let pillCornerRadius: CGFloat = 16
     static let arrowTabThickness: CGFloat = 22
 
+    /// Invisible mouse-tracking padding around the visible pill content.
+    /// `approachPadAbove` is the "approach zone" — cursor moving toward
+    /// the parked tab from the screen interior enters the tracking area
+    /// well before reaching the visible tab, so the pill pops up earlier.
+    /// `approachPadBelow` keeps the cursor inside the tracking bounds
+    /// after the panel slides up from its parked position (so the
+    /// previous parked-tab-position is still inside the window),
+    /// eliminating the unpark/re-park bounce.
+    static let approachPadAbove: CGFloat = 110
+    static let approachPadBelow: CGFloat = 32
+
     static let autoParkDelay: TimeInterval = 2.5
     static let initialShowDelay: TimeInterval = 1.7
     static let unparkDuration: TimeInterval = 0.62
@@ -219,9 +230,10 @@ final class FloatingModeSwitcher {
     }
 
     private func handleDragMove(dx: CGFloat, dy: CGFloat) {
+        // Bottom-locked — only horizontal movement. Vertical drag is
+        // ignored so the pill can't be pulled off its edge.
         var f = panel.frame
         f.origin.x += dx
-        f.origin.y += dy
         panel.setFrameOrigin(f.origin)
         idleTimer?.invalidate()
     }
@@ -272,30 +284,14 @@ final class FloatingModeSwitcher {
     }
 
     private func snapToNearestEdge() {
+        // Bottom-only by design — user feedback was that snap-to-any-edge
+        // made the pill feel unstable. Drag still moves the pill, but
+        // release always re-snaps to the bottom edge at the new x.
         guard let screen = panel.screen ?? NSScreen.main else { return }
         let f = panel.frame
-        let sf = screen.frame
-        let cx = f.midX, cy = f.midY
-        let dLeft = max(0, cx - sf.minX)
-        let dRight = max(0, sf.maxX - cx)
-        let dBottom = max(0, cy - sf.minY)
-        let dTop = max(0, sf.maxY - cy)
-        let minD = min(dLeft, dRight, dBottom, dTop)
-        let newEdge: FloatingSwitcherEdge
-        if minD == dBottom { newEdge = .bottom }
-        else if minD == dTop { newEdge = .top }
-        else if minD == dLeft { newEdge = .left }
-        else { newEdge = .right }
-        parkedEdge = newEdge
-
-        // Resize panel to fit new orientation (vertical pill if .left/.right).
-        let size = container.preferredSize(for: enabledModes.count, edge: newEdge)
-        var rect = f
-        rect.size = size
-        container.configure(enabled: enabledModes, current: currentMode, edge: newEdge, parked: false)
-        panel.setFrame(rect, display: false)
-
-        let target = unparkedFrame(for: rect, edge: newEdge, screen: screen)
+        parkedEdge = .bottom
+        container.configure(enabled: enabledModes, current: currentMode, edge: .bottom, parked: false)
+        let target = unparkedFrame(for: f, edge: .bottom, screen: screen)
         animateFrame(to: target,
                      duration: Self.unparkDuration,
                      easing: Self.easeOutBack) { [weak self] in
@@ -307,12 +303,22 @@ final class FloatingModeSwitcher {
 
     private func parkedFrame(for f: NSRect, edge: FloatingSwitcherEdge, screen: NSScreen) -> NSRect {
         let sf = screen.frame
+        let tab = Self.arrowTabThickness
+        let padAbove = Self.approachPadAbove
+        let padBelow = Self.approachPadBelow
+        // Visible-content height (pill + tab) — what we want to leave the
+        // tab portion of when parked.
+        let visibleH = f.height - padAbove - padBelow
         var r = f
         switch edge {
-        case .bottom: r.origin.y = sf.minY - f.height + Self.arrowTabThickness
-        case .top:    r.origin.y = sf.maxY - Self.arrowTabThickness
-        case .left:   r.origin.x = sf.minX - f.width + Self.arrowTabThickness
-        case .right:  r.origin.x = sf.maxX - Self.arrowTabThickness
+        case .bottom:
+            // Window origin so that the tab (at y = padBelow + pillH inside
+            // the window) sits flush with the screen bottom edge.
+            r.origin.y = sf.minY - (padBelow + (visibleH - tab))
+        case .top:
+            r.origin.y = sf.maxY - tab - padAbove
+        case .left:   r.origin.x = sf.minX - f.width + tab
+        case .right:  r.origin.x = sf.maxX - tab
         }
         return r
     }
@@ -320,10 +326,16 @@ final class FloatingModeSwitcher {
     private func unparkedFrame(for f: NSRect, edge: FloatingSwitcherEdge, screen: NSScreen) -> NSRect {
         let sf = screen.frame
         let inset = Self.parkInset
+        let padBelow = Self.approachPadBelow
         var r = f
         switch edge {
-        case .bottom: r.origin.y = sf.minY + inset
-        case .top:    r.origin.y = sf.maxY - f.height - inset
+        case .bottom:
+            // Pill sits at screen.minY + inset; the window itself starts
+            // padBelow lower so the tracking area still covers the
+            // previous parked-tab cursor position (no bounce on unpark).
+            r.origin.y = sf.minY + inset - padBelow
+        case .top:
+            r.origin.y = sf.maxY - f.height - inset + Self.approachPadAbove
         case .left:   r.origin.x = sf.minX + inset
         case .right:  r.origin.x = sf.maxX - f.width - inset
         }
@@ -455,13 +467,19 @@ final class FloatingSwitcherContainer: NSView {
         let chip = FloatingModeSwitcher.chipSize
         let gap = FloatingModeSwitcher.chipGap
         let tab = FloatingModeSwitcher.arrowTabThickness
+        let padAbove = FloatingModeSwitcher.approachPadAbove
+        let padBelow = FloatingModeSwitcher.approachPadBelow
         // Horizontal pill (top/bottom-parked): chips laid out in a row.
         // Vertical pill (left/right-parked): chips laid out in a column.
+        // For bottom — the only edge the user actually uses — we add an
+        // approach zone above (so hover triggers early) and a sliver below
+        // (so the parked-tab cursor position stays inside the window after
+        // the panel animates up).
         switch edge {
         case .bottom, .top:
             let pillW = pad * 2 + n * chip.width + (n - 1) * gap
             let pillH = pad * 2 + chip.height
-            return NSSize(width: pillW, height: pillH + tab)
+            return NSSize(width: pillW, height: pillH + tab + padAbove + padBelow)
         case .left, .right:
             let pillW = pad * 2 + chip.height
             let pillH = pad * 2 + n * chip.width + (n - 1) * gap
@@ -491,9 +509,18 @@ final class FloatingSwitcherContainer: NSView {
 
     private func pillRect() -> NSRect {
         let tab = FloatingModeSwitcher.arrowTabThickness
+        let padAbove = FloatingModeSwitcher.approachPadAbove
+        let padBelow = FloatingModeSwitcher.approachPadBelow
         switch edge {
-        case .bottom: return NSRect(x: 0, y: 0, width: bounds.width, height: bounds.height - tab)
-        case .top:    return NSRect(x: 0, y: tab, width: bounds.width, height: bounds.height - tab)
+        case .bottom:
+            // Pill sits in the lower portion of the window, above the
+            // invisible padBelow strip. Tab is drawn just above the pill
+            // (between pill and the approach zone above).
+            let pillH = bounds.height - tab - padAbove - padBelow
+            return NSRect(x: 0, y: padBelow, width: bounds.width, height: pillH)
+        case .top:
+            let pillH = bounds.height - tab - padAbove - padBelow
+            return NSRect(x: 0, y: tab + padAbove, width: bounds.width, height: pillH)
         case .left:   return NSRect(x: tab, y: 0, width: bounds.width - tab, height: bounds.height)
         case .right:  return NSRect(x: 0, y: 0, width: bounds.width - tab, height: bounds.height)
         }
@@ -501,6 +528,8 @@ final class FloatingSwitcherContainer: NSView {
 
     private func arrowTabRect() -> NSRect {
         let tab = FloatingModeSwitcher.arrowTabThickness
+        let padAbove = FloatingModeSwitcher.approachPadAbove
+        let padBelow = FloatingModeSwitcher.approachPadBelow
         // Wider for horizontal edges to fit the "Tab ⇥" label; vertical
         // edges keep the original limit since they render the chevron.
         let horizontalLenLimit: CGFloat = 88
@@ -508,10 +537,14 @@ final class FloatingSwitcherContainer: NSView {
         switch edge {
         case .bottom:
             let len = min(horizontalLenLimit, bounds.width * 0.55)
-            return NSRect(x: bounds.midX - len / 2, y: bounds.height - tab, width: len, height: tab)
+            // Tab is the visible strip above the pill — sits between pill
+            // (height padBelow..padBelow+pillH) and the approach zone.
+            let pillH = bounds.height - tab - padAbove - padBelow
+            let tabY = padBelow + pillH
+            return NSRect(x: bounds.midX - len / 2, y: tabY, width: len, height: tab)
         case .top:
             let len = min(horizontalLenLimit, bounds.width * 0.55)
-            return NSRect(x: bounds.midX - len / 2, y: 0, width: len, height: tab)
+            return NSRect(x: bounds.midX - len / 2, y: padAbove, width: len, height: tab)
         case .left:
             let len = min(verticalLenLimit, bounds.height * 0.55)
             return NSRect(x: 0, y: bounds.midY - len / 2, width: tab, height: len)

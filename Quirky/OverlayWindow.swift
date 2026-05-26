@@ -347,11 +347,12 @@ final class SelectionView: NSView {
             if maxX < minX { swap(&minX, &maxX) }
             if maxY < minY { swap(&minY, &maxY) }
             let newRect = NSRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
-            guard let image = backgroundImage else { return }
-            let sx = CGFloat(image.width) / bounds.width
-            let sy = CGFloat(image.height) / bounds.height
-            let pxW = Int((newRect.width * sx).rounded())
-            let pxH = Int((newRect.height * sy).rounded())
+            // Report measurements in logical points (view-space) to match
+            // Figma / web DevTools / Sketch — what designers actually want
+            // when they're sizing an element on a Retina display. Internal
+            // SPXAnalyzer / snap detection still works in image-space.
+            let pxW = Int(newRect.width.rounded())
+            let pxH = Int(newRect.height.rounded())
             spxCommitted[h.segmentIndex] = SPXSegment(
                 axis: .rect,
                 start: NSPoint(x: minX, y: minY),
@@ -371,16 +372,9 @@ final class SelectionView: NSView {
                 if h.cornerIndex == 0 { newStart = NSPoint(x: x, y: snapped.y); newEnd = seg.end }
                 else { newStart = seg.start; newEnd = NSPoint(x: x, y: snapped.y) }
             }
-            let lengthPxImage: Int = { () -> Int in
-                guard let image = backgroundImage else {
-                    return Int(hypot(newEnd.x - newStart.x, newEnd.y - newStart.y).rounded())
-                }
-                let sx = CGFloat(image.width) / bounds.width
-                let sy = CGFloat(image.height) / bounds.height
-                let dx = abs(newEnd.x - newStart.x) * sx
-                let dy = abs(newEnd.y - newStart.y) * sy
-                return Int((dx + dy).rounded())  // axis-aligned, one term is 0
-            }()
+            // Logical points (axis-aligned distance in view space) — same
+            // unit as Figma / DevTools.
+            let lengthPxImage = Int(hypot(newEnd.x - newStart.x, newEnd.y - newStart.y).rounded())
             spxCommitted[h.segmentIndex] = SPXSegment(
                 axis: seg.axis,
                 start: newStart, end: newEnd,
@@ -1080,12 +1074,12 @@ final class SelectionView: NSView {
         }
     }
 
-    /// Convert a view-space span on one axis to image pixels (rounded).
+    /// Return a view-space span in logical points (rounded). The name is
+    /// kept for compatibility with existing callers; despite the "Px"
+    /// suffix this is now points, not Retina image pixels, so the value
+    /// matches what designers see in Figma / DevTools.
     private func viewLengthToImagePx(_ a: CGFloat, _ b: CGFloat, axisX: Bool) -> Int {
-        guard let image = backgroundImage else { return Int(abs(b - a).rounded()) }
-        let scale = axisX ? CGFloat(image.width) / bounds.width
-                          : CGFloat(image.height) / bounds.height
-        return Int((abs(b - a) * scale).rounded())
+        return Int(abs(b - a).rounded())
     }
 
     /// Clip a horizontal ruler at view-row `vy` to the nearest committed rect
@@ -1297,11 +1291,10 @@ final class SelectionView: NSView {
     }
 
     private func commitSPXRect(_ rect: NSRect) {
-        guard let image = backgroundImage, rect.width > 2, rect.height > 2 else { return }
-        let sx = CGFloat(image.width) / bounds.width
-        let sy = CGFloat(image.height) / bounds.height
-        let pxW = Int((rect.width * sx).rounded())
-        let pxH = Int((rect.height * sy).rounded())
+        guard let _ = backgroundImage, rect.width > 2, rect.height > 2 else { return }
+        // Logical points — same unit as Figma / DevTools.
+        let pxW = Int(rect.width.rounded())
+        let pxH = Int(rect.height.rounded())
         let color = spxSegmentColor
         spxCommitted.append(SPXSegment(
             axis: .rect,
@@ -1379,11 +1372,9 @@ final class SelectionView: NSView {
         // 2) Live preview & crosshair — only in interactive mode.
         if !ghost {
             if (spxIsDragging || spxIsSnapAnimating) && spxLiveDragRect.width > 1 && spxLiveDragRect.height > 1 {
-                let pxW: Int, pxH: Int
-                if let image = backgroundImage {
-                    pxW = Int((spxLiveDragRect.width * CGFloat(image.width) / bounds.width).rounded())
-                    pxH = Int((spxLiveDragRect.height * CGFloat(image.height) / bounds.height).rounded())
-                } else { pxW = Int(spxLiveDragRect.width); pxH = Int(spxLiveDragRect.height) }
+                // Logical points (view-space) — what designers expect.
+                let pxW = Int(spxLiveDragRect.width.rounded())
+                let pxH = Int(spxLiveDragRect.height.rounded())
                 drawSPXRect(context: context, rect: spxLiveDragRect, color: segColor,
                             label: "\(pxW)×\(pxH)", alpha: 0.7, lineW: 1.0,
                             drawHandles: false, hoveredHandle: nil, activeHandle: nil)
