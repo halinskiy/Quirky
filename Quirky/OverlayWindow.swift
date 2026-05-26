@@ -630,7 +630,20 @@ final class SelectionView: NSView {
         if inflated.width < 10 { inflated = inflated.insetBy(dx: -10, dy: 0) }
         var finalRect = inflated
         if !isSVGMode {
-            for box in screenWordBoxes where inflated.intersects(box) { finalRect = finalRect.union(box) }
+            // Match the live-drag highlight rule: include only words whose
+            // CENTER lies inside the selection rect, then tighten finalRect
+            // to the union of those words. The previous `intersects()` test
+            // grew finalRect into adjacent lines on any pixel-level overlap,
+            // causing the OCR result to include text the user didn't select.
+            var contained: [CGRect] = []
+            for box in screenWordBoxes {
+                if inflated.contains(NSPoint(x: box.midX, y: box.midY)) {
+                    contained.append(box)
+                }
+            }
+            if !contained.isEmpty {
+                finalRect = contained.reduce(contained[0]) { $0.union($1) }
+            }
         }
         guard finalRect.width > 2, finalRect.height > 2 else { onCancel?(); return }
         completeWith(viewRect: finalRect)
@@ -723,7 +736,13 @@ final class SelectionView: NSView {
             NSColor.white.withAlphaComponent(0.8).setStroke()
             innerPath.lineWidth = 1.0; innerPath.stroke()
             drawSizeLabel(context: context)
-            let hitBoxes = activeBoxes.filter { selectionRect.intersects($0) }
+            // Strict "center inside selection" hit-test instead of bare
+            // intersects() — a 1-pixel overlap on an adjacent line used to
+            // light up that whole line's word and then include it in the
+            // OCR crop, surprising users who clearly only selected one line.
+            let hitBoxes = activeBoxes.filter { box in
+                selectionRect.contains(NSPoint(x: box.midX, y: box.midY))
+            }
             highlightColor.setStroke()
             for box in mergeBoxesByLine(hitBoxes) {
                 let path = NSBezierPath(roundedRect: box, xRadius: cornerRadius, yRadius: cornerRadius)

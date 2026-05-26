@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>method</key>
+    <string>app-store</string>
+    <key>destination</key>
+    <string>export</string>
+    <key>teamID</key>
+    <string>PDB9JGGX74</string>
+    <key>signingStyle</key>
+    <string>manual</string>
+    <key>provisioningProfiles</key>
+    <dict>
+        <key>com.threempq.quirky</key>
+        <string>Quirky MAS Distribution</string>
+    </dict>
+    <key>installerSigningCertificate</key>
+    <string>3rd Party Mac Developer Installer: Kostiantyn Halynskyi (PDB9JGGX74)</string>
+</dict>
+</plist>

@@ -501,19 +501,22 @@ final class FloatingSwitcherContainer: NSView {
 
     private func arrowTabRect() -> NSRect {
         let tab = FloatingModeSwitcher.arrowTabThickness
-        let lenLimit: CGFloat = 64
+        // Wider for horizontal edges to fit the "Tab ⇥" label; vertical
+        // edges keep the original limit since they render the chevron.
+        let horizontalLenLimit: CGFloat = 88
+        let verticalLenLimit: CGFloat = 64
         switch edge {
         case .bottom:
-            let len = min(lenLimit, bounds.width * 0.55)
+            let len = min(horizontalLenLimit, bounds.width * 0.55)
             return NSRect(x: bounds.midX - len / 2, y: bounds.height - tab, width: len, height: tab)
         case .top:
-            let len = min(lenLimit, bounds.width * 0.55)
+            let len = min(horizontalLenLimit, bounds.width * 0.55)
             return NSRect(x: bounds.midX - len / 2, y: 0, width: len, height: tab)
         case .left:
-            let len = min(lenLimit, bounds.height * 0.55)
+            let len = min(verticalLenLimit, bounds.height * 0.55)
             return NSRect(x: 0, y: bounds.midY - len / 2, width: tab, height: len)
         case .right:
-            let len = min(lenLimit, bounds.height * 0.55)
+            let len = min(verticalLenLimit, bounds.height * 0.55)
             return NSRect(x: bounds.width - tab, y: bounds.midY - len / 2, width: tab, height: len)
         }
     }
@@ -601,9 +604,49 @@ final class FloatingSwitcherContainer: NSView {
         tabPath.lineWidth = 1
         tabPath.stroke()
 
-        let direction = arrowDirection()
-        let glyphScale: CGFloat = hoveredArrow ? 1.4 : 1.0
-        drawArrowGlyph(in: tabRect, pointing: direction, scale: glyphScale)
+        let glyphScale: CGFloat = hoveredArrow ? 1.18 : 1.0
+        drawTabIndicator(in: tabRect, edge: edge, scale: glyphScale)
+    }
+
+    private static let tabLabelFont: CTFont = {
+        if let f = CGFont("Helvetica-Bold" as CFString) {
+            return CTFontCreateWithGraphicsFont(f, 11, nil, nil)
+        }
+        return CTFontCreateWithName("Helvetica" as CFString, 11, nil)
+    }()
+
+    private func drawTabIndicator(in rect: NSRect, edge: FloatingSwitcherEdge, scale: CGFloat) {
+        // Horizontal "Tab ⇥" label for the default top/bottom park position
+        // — communicates that the Tab key cycles modes in addition to the
+        // click affordance. Vertical (left/right) tabs are too narrow for
+        // horizontal text, so they keep the chevron.
+        if edge == .left || edge == .right {
+            drawArrowGlyph(in: rect, pointing: arrowDirection(), scale: scale)
+            return
+        }
+
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        let font: CTFont
+        if scale == 1.0 {
+            font = Self.tabLabelFont
+        } else if let base = CGFont("Helvetica-Bold" as CFString) {
+            font = CTFontCreateWithGraphicsFont(base, 11 * scale, nil, nil)
+        } else {
+            font = CTFontCreateWithName("Helvetica" as CFString, 11 * scale, nil)
+        }
+        let color = CGColor(red: 1, green: 1, blue: 1, alpha: 0.92)
+        let attrs: [NSAttributedString.Key: Any] = [
+            kCTFontAttributeName as NSAttributedString.Key: font,
+            kCTForegroundColorAttributeName as NSAttributedString.Key: color
+        ]
+        let attr = NSAttributedString(string: "Tab ⇥", attributes: attrs)
+        let line = CTLineCreateWithAttributedString(attr)
+        let lb = CTLineGetBoundsWithOptions(line, .useOpticalBounds)
+        ctx.textPosition = CGPoint(
+            x: rect.midX - lb.width / 2 - lb.minX,
+            y: rect.midY - lb.height / 2 - lb.minY
+        )
+        CTLineDraw(line, ctx)
     }
 
     private func arrowDirection() -> FloatingSwitcherEdge {
