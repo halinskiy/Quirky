@@ -285,7 +285,7 @@ final class SelectionView: NSView {
 
     /// Update segment endpoint/corner during a resize drag. Snaps the dragged
     /// anchor to the nearest detected edge on release.
-    private func updateActiveHandle(to p: NSPoint, finalize: Bool) {
+    private func updateActiveHandle(to p: NSPoint, shiftHeld: Bool = false, finalize: Bool) {
         guard let h = spxActiveHandle, h.segmentIndex < spxCommitted.count else { return }
         let seg = spxCommitted[h.segmentIndex]
         let snapped = finalize ? snapViewPoint(p, radius: 18) : p
@@ -293,15 +293,56 @@ final class SelectionView: NSView {
         if seg.axis == .rect {
             var minX = seg.start.x, minY = seg.start.y
             var maxX = seg.end.x,   maxY = seg.end.y
-            switch h.cornerIndex {
-            case 0: minX = snapped.x; minY = snapped.y     // corner
-            case 1: maxX = snapped.x; minY = snapped.y     // corner
-            case 2: minX = snapped.x; maxY = snapped.y     // corner
-            case 3: maxX = snapped.x; maxY = snapped.y     // corner
-            case 4: minX = snapped.x                       // left edge
-            case 5: maxX = snapped.x                       // right edge
-            case 6: minY = snapped.y                       // bottom edge
-            default: maxY = snapped.y                      // top edge
+
+            // Shift on a corner handle locks the aspect ratio against the
+            // opposite (anchor) corner — like Figma/Photoshop. Edges (4-7)
+            // are already single-axis, so Shift is a no-op there.
+            let isCorner = h.cornerIndex < 4
+            if shiftHeld && isCorner {
+                let segW = seg.end.x - seg.start.x
+                let segH = seg.end.y - seg.start.y
+                let aspect = abs(segW) / max(1, abs(segH))
+                let anchorX: CGFloat
+                let anchorY: CGFloat
+                switch h.cornerIndex {
+                case 0: anchorX = seg.end.x;   anchorY = seg.end.y       // anchor BR
+                case 1: anchorX = seg.start.x; anchorY = seg.end.y       // anchor BL
+                case 2: anchorX = seg.end.x;   anchorY = seg.start.y     // anchor TR
+                default: anchorX = seg.start.x; anchorY = seg.start.y    // anchor TL
+                }
+                let dx = snapped.x - anchorX
+                let dy = snapped.y - anchorY
+                let signX: CGFloat = dx >= 0 ? 1 : -1
+                let signY: CGFloat = dy >= 0 ? 1 : -1
+                // Project the moving corner onto the diagonal of the
+                // original aspect ratio. Pick the dominant axis so the
+                // user always feels the cursor lead, never the lock.
+                var newDx = dx
+                var newDy = dy
+                if abs(dx) > abs(dy) * aspect {
+                    newDy = signY * abs(dx) / aspect
+                } else {
+                    newDx = signX * abs(dy) * aspect
+                }
+                let nx = anchorX + newDx
+                let ny = anchorY + newDy
+                switch h.cornerIndex {
+                case 0: minX = nx; minY = ny
+                case 1: maxX = nx; minY = ny
+                case 2: minX = nx; maxY = ny
+                default: maxX = nx; maxY = ny
+                }
+            } else {
+                switch h.cornerIndex {
+                case 0: minX = snapped.x; minY = snapped.y     // corner TL
+                case 1: maxX = snapped.x; minY = snapped.y     // corner TR
+                case 2: minX = snapped.x; maxY = snapped.y     // corner BL
+                case 3: maxX = snapped.x; maxY = snapped.y     // corner BR
+                case 4: minX = snapped.x                       // left edge
+                case 5: maxX = snapped.x                       // right edge
+                case 6: minY = snapped.y                       // bottom edge
+                default: maxY = snapped.y                      // top edge
+                }
             }
             if maxX < minX { swap(&minX, &maxX) }
             if maxY < minY { swap(&minY, &maxY) }
@@ -500,7 +541,7 @@ final class SelectionView: NSView {
         if isSPXMode {
             spxCursor = current
             if spxActiveHandle != nil {
-                updateActiveHandle(to: current, finalize: false)
+                updateActiveHandle(to: current, shiftHeld: event.modifierFlags.contains(.shift), finalize: false)
                 return
             }
             if !spxIsDragging && hypot(current.x - spxDragOrigin.x, current.y - spxDragOrigin.y) > 3 {
@@ -582,7 +623,7 @@ final class SelectionView: NSView {
         if isSPXMode {
             if spxActiveHandle != nil {
                 let current = convert(event.locationInWindow, from: nil)
-                updateActiveHandle(to: current, finalize: true)
+                updateActiveHandle(to: current, shiftHeld: event.modifierFlags.contains(.shift), finalize: true)
                 spxActiveHandle = nil
                 recomputeSPXLiveSegments()
                 needsDisplay = true
