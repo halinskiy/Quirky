@@ -3,6 +3,21 @@
     <channel>
         <title>Quirky Updates</title>
         <language>en</language>
+    <item>
+      <title>Version 1.0.1</title>
+      <sparkle:version>1.0.1</sparkle:version>
+      <sparkle:shortVersionString>1.0.1</sparkle:shortVersionString>
+      <pubDate>Tue, 07 Jul 2026 14:46:29 +0000</pubDate>
+      <description><![CDATA[
+        <h2>Quirky v1.0.1</h2>
+        <ul><li>Reliability and performance improvements</li></ul>
+      ]]></description>
+      <enclosure
+        url="https://github.com/halinskiy/Quirky/releases/download/v1.0.1/Quirky-1.0.1.zip"
+        sparkle:edSignature="PLVMlih2aZmiZfu+kIlHqDSp292jXLG28OAZ+3aSXqUINB21bCIhHeaWYNnQIW1yT3yyP0RPcULuBA8T6cQJCQ==" length="1750055"
+        type="application/octet-stream" />
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+    </item>
         <!--
             To publish a new release:
             1. Bump MARKETING_VERSION and CURRENT_PROJECT_VERSION in Quirky.xcodeproj (or via agvtool).
