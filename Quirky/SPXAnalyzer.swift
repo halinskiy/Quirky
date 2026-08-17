@@ -4,12 +4,13 @@ import Cocoa
 /// Holds a tightly-packed RGBA copy of a CGImage plus lazy edge / run-length maps.
 ///
 /// Primitives:
-///   - `elementBboxAt(x:y:minEdgeLength:)` — raycast in 4 directions from `(x,y)`
-///     until hitting a "long" edge in each axis. Long-edge filtering ignores text
-///     strokes and short artefacts, snapping the bbox to the nearest enclosing
-///     UI element (window, panel, card, button).
+///   - `horizontalExtent(at:y:minEdgeLength:)` / `verticalExtent(...)` — cast a
+///     ray from `(x, y)` until it hits a "long" edge. Long-edge filtering is what
+///     makes a ruler stop on a card border instead of on a letter stroke.
+///   - `contentBoundsIn(_:minGradient:)` — tight bounds of the visible content
+///     inside a rect, used to shrink a drawn selection onto what it encloses.
 ///   - `snapToEdge(near:radius:)` — spiral search for the nearest high-gradient
-///     pixel (used for free ruler endpoints, if/when added back).
+///     pixel; snaps a dragged ruler endpoint onto a real edge.
 ///
 /// All coordinates are image pixels, origin top-left.
 final class SPXAnalyzer {
@@ -121,177 +122,6 @@ final class SPXAnalyzer {
             }
         }
         return (top, bottom)
-    }
-
-    // MARK: - Element bbox (raycast over long edges)
-
-    /// Returns the bounding rect of the smallest enclosing UI element around
-    /// `(x, y)`, or `nil` if the rays cover more than `maxArea` fraction of the
-    /// canvas (e.g., when the cursor is on a uniform desktop background).
-    ///
-    /// `minEdgeLength` is the perpendicular run length an edge must have to be
-    /// considered a "real" boundary. ~16 px filters out body text strokes while
-    /// keeping buttons / cards / windows.
-    func elementBboxAt(x: Int, y: Int, minEdgeLength: Int = 16, maxArea: Double = 0.85) -> CGRect? {
-        guard x >= 0, y >= 0, x < width, y < height else { return nil }
-        if vRunLen == nil || hRunLen == nil { buildRunMaps() }
-        guard let v = vRunLen, let h = hRunLen else { return nil }
-
-        let minLen = UInt8(min(255, max(1, minEdgeLength)))
-        let w = width
-
-        // Ray right: find smallest x' > x where vRunLen[(y, x')] >= minLen.
-        var right = width - 1
-        if x < width - 1 {
-            for xi in (x + 1)..<width where v[y * w + xi] >= minLen {
-                right = xi; break
-            }
-        }
-
-        // Ray left.
-        var left = 0
-        if x > 0 {
-            var xi = x - 1
-            while xi >= 0 {
-                if v[y * w + xi] >= minLen { left = xi; break }
-                xi -= 1
-            }
-        }
-
-        // Ray down (image y grows downward).
-        var bottom = height - 1
-        if y < height - 1 {
-            for yi in (y + 1)..<height where h[yi * w + x] >= minLen {
-                bottom = yi; break
-            }
-        }
-
-        // Ray up.
-        var top = 0
-        if y > 0 {
-            var yi = y - 1
-            while yi >= 0 {
-                if h[yi * w + x] >= minLen { top = yi; break }
-                yi -= 1
-            }
-        }
-
-        let wOut = right - left + 1
-        let hOut = bottom - top + 1
-        guard wOut > 3, hOut > 3 else { return nil }
-        if Double(wOut * hOut) > Double(width * height) * maxArea { return nil }
-        return CGRect(x: left, y: top, width: wOut, height: hOut)
-    }
-
-    // MARK: - Rect snap (drag a frame → snap each edge to detected edges)
-
-    /// Given a user-drawn rectangle in image pixels, snap each edge to the
-    /// strongest nearby edge in a perpendicular band of width `2*tolerance`.
-    /// The score for a candidate row/column is the number of pixels along the
-    /// rect's opposite axis whose run-length is at least `minRunLength` — this
-    /// prefers long, continuous edges (window/card borders) over short ones
-    /// (text strokes).
-    ///
-    /// If the best candidate's score is below `minAcceptableFraction` of the
-    /// edge length, that edge isn't snapped (keeps the user's intent in
-    /// edge-poor regions).
-    func snapRect(_ rect: CGRect,
-                  tolerance: Int = 18,
-                  minRunLength: Int = 8,
-                  minAcceptableFraction: Double = 0.12) -> CGRect {
-        if vRunLen == nil || hRunLen == nil { buildRunMaps() }
-        guard let v = vRunLen, let h = hRunLen else { return rect }
-
-        let xMin = max(0, min(width - 1, Int(rect.minX.rounded())))
-        let xMax = max(0, min(width - 1, Int(rect.maxX.rounded())))
-        let yMin = max(0, min(height - 1, Int(rect.minY.rounded())))
-        let yMax = max(0, min(height - 1, Int(rect.maxY.rounded())))
-        guard xMax > xMin + 1, yMax > yMin + 1 else { return rect }
-
-        let minRun = UInt8(min(255, max(1, minRunLength)))
-        let w = width
-
-        let edgeLenX = xMax - xMin + 1
-        let edgeLenY = yMax - yMin + 1
-        let minHScore = max(2, Int(Double(edgeLenX) * minAcceptableFraction))
-        let minVScore = max(2, Int(Double(edgeLenY) * minAcceptableFraction))
-
-        @inline(__always) func scoreRow(_ y: Int) -> Int {
-            let row = y * w
-            var s = 0
-            for x in xMin...xMax where h[row + x] >= minRun { s += 1 }
-            return s
-        }
-        @inline(__always) func scoreCol(_ x: Int) -> Int {
-            var s = 0
-            for y in yMin...yMax where v[y * w + x] >= minRun { s += 1 }
-            return s
-        }
-
-        // Snap top: search [yMin - tol, yMin + tol], prefer rows closer to the user's edge on ties.
-        var bestTop = yMin, bestTopScore = -1, bestTopDist = Int.max
-        let topLo = max(0, yMin - tolerance)
-        let topHi = min(height - 1, yMin + tolerance)
-        if topLo <= topHi {
-            for cy in topLo...topHi {
-                let s = scoreRow(cy)
-                let dist = abs(cy - yMin)
-                if s > bestTopScore || (s == bestTopScore && dist < bestTopDist) {
-                    bestTopScore = s; bestTop = cy; bestTopDist = dist
-                }
-            }
-        }
-        if bestTopScore < minHScore { bestTop = yMin }
-
-        // Snap bottom.
-        var bestBot = yMax, bestBotScore = -1, bestBotDist = Int.max
-        let botLo = max(0, yMax - tolerance)
-        let botHi = min(height - 1, yMax + tolerance)
-        if botLo <= botHi {
-            for cy in botLo...botHi {
-                let s = scoreRow(cy)
-                let dist = abs(cy - yMax)
-                if s > bestBotScore || (s == bestBotScore && dist < bestBotDist) {
-                    bestBotScore = s; bestBot = cy; bestBotDist = dist
-                }
-            }
-        }
-        if bestBotScore < minHScore { bestBot = yMax }
-
-        // Snap left.
-        var bestLeft = xMin, bestLeftScore = -1, bestLeftDist = Int.max
-        let lLo = max(0, xMin - tolerance)
-        let lHi = min(width - 1, xMin + tolerance)
-        if lLo <= lHi {
-            for cx in lLo...lHi {
-                let s = scoreCol(cx)
-                let dist = abs(cx - xMin)
-                if s > bestLeftScore || (s == bestLeftScore && dist < bestLeftDist) {
-                    bestLeftScore = s; bestLeft = cx; bestLeftDist = dist
-                }
-            }
-        }
-        if bestLeftScore < minVScore { bestLeft = xMin }
-
-        // Snap right.
-        var bestRight = xMax, bestRightScore = -1, bestRightDist = Int.max
-        let rLo = max(0, xMax - tolerance)
-        let rHi = min(width - 1, xMax + tolerance)
-        if rLo <= rHi {
-            for cx in rLo...rHi {
-                let s = scoreCol(cx)
-                let dist = abs(cx - xMax)
-                if s > bestRightScore || (s == bestRightScore && dist < bestRightDist) {
-                    bestRightScore = s; bestRight = cx; bestRightDist = dist
-                }
-            }
-        }
-        if bestRightScore < minVScore { bestRight = xMax }
-
-        if bestRight <= bestLeft || bestBot <= bestTop { return rect }
-        return CGRect(x: bestLeft, y: bestTop,
-                      width: bestRight - bestLeft,
-                      height: bestBot - bestTop)
     }
 
     // MARK: - Content bounds inside a rect (shrink-only magnetism)

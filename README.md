@@ -6,7 +6,7 @@
 
 <p align="center">
   A lightweight macOS menu bar capture suite — five precise tools behind one global hotkey.<br>
-  Press <kbd>⌘⇧1</kbd> to capture; switch tools on the fly from the floating picker.<br>
+  Press <kbd>⌘⇧1</kbd> to capture; switch tools on the fly from the menu-bar picker.<br>
   Results land in your clipboard instantly.
 </p>
 
@@ -24,9 +24,11 @@
 
 **SPX** — PixelSnap-style pixel measurement. Magnetic edge detection, free-drag rect → snap-on-release, ruler crosshair, resizable handles on every side, hover-reveal close button, ghost mode (⌘⇧1 toggle) lets you keep markings translucent over the live screen.
 
-## Floating mode switcher
+Rulers stop at whatever they meet first: a detected edge, or a measurement you already placed. Drop a guide with <kbd>H</kbd>/<kbd>V</kbd> and the next ruler measures right up to it. Hold <kbd>Shift</kbd> to ignore every obstacle and run a guide the full width or height of the screen. <kbd>T</kbd> cycles three snap levels — **Window** (structural borders), **Element** (cards, buttons, inputs), **Detail** (icons, glyphs, hairlines). <kbd>⌫</kbd> undoes the last mark, <kbd>esc</kbd> exits.
 
-Enable two or more modes in the menu-bar popover. Press <kbd>⌘⇧1</kbd> — a glass pill slides in from the bottom of the screen with chips for each enabled mode. After a moment it parks itself at the nearest screen edge as a small arrow tab. Click the tab (or drag the whole pill to any edge) to bring the chips back; click another chip to switch tools without leaving capture. The pill auto-parks again after a couple of idle seconds.
+## Mode picker
+
+Enable the modes you use in the settings menu (right-click the menu-bar icon). Press <kbd>⌘⇧1</kbd> — capture opens in the mode you used last, and a picker drops down from the menu-bar icon with a chip per enabled mode. Click a chip to switch tools without leaving capture, or click the icon any time to open the picker and start a session straight from it. The picker closes as soon as you start working. <kbd>Tab</kbd> still cycles modes during capture.
 
 ## Installation
 

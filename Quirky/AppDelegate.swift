@@ -43,6 +43,24 @@ private enum EnabledModesStore {
     }
 }
 
+// MARK: - Last Mode Storage
+
+/// Remembers the mode the user last worked in, so the next ⌘⇧1 resumes
+/// where they left off instead of always restarting at the first enabled
+/// mode. Persisted across launches.
+private enum LastModeStore {
+    private static let key = "lastCaptureMode"
+
+    static func load() -> CaptureMode? {
+        guard let raw = UserDefaults.standard.string(forKey: key) else { return nil }
+        return CaptureMode(rawValue: raw)
+    }
+
+    static func save(_ mode: CaptureMode) {
+        UserDefaults.standard.set(mode.rawValue, forKey: key)
+    }
+}
+
 // MARK: - App Delegate
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -56,11 +74,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var previousApp: NSRunningApplication?
     private var preCapturedImages: [(displayID: CGDirectDisplayID, bounds: CGRect, image: CGImage)] = []
 
+    // Stuck-overlay defenses. The overlay covers the whole screen above the
+    // menu bar, so a wedged one leaves the machine unusable: the user sees a
+    // frozen screenshot and can't reach anything to close it.
+    private var watchdog: Timer?
+    private var lastOverlayActivity = Date()
+    private var captureStartedAt = Date.distantPast
+    private var hotkeyBurst: [Date] = []
+
     #if !MAS_BUILD
     private let updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
     #endif
     private var modeTogglesView: ModeTogglesView?
-    private let modeSwitcher = FloatingModeSwitcher()
+    private let modePopover = ModePopover()
 
     // MARK: Lifecycle
 
@@ -73,41 +99,172 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !PermissionManager.hasScreenRecordingPermission { PermissionManager.requestScreenRecordingPermission() }
         setupHotkeys()
         overlay.onSPXPreserveHide = { [weak self] in self?.handleSPXPreserveHide() }
-        modeSwitcher.delegate = self
+        overlay.onActivity = { [weak self] in self?.lastOverlayActivity = Date() }
+        modePopover.onActivity = { [weak self] in self?.lastOverlayActivity = Date() }
+        modePopover.delegate = self
+        // Losing focus while an opaque overlay covers the screen is the exact
+        // shape of the stuck-overlay bug: the user can drive other apps but
+        // only sees a frozen screenshot. Bail out of capture instead.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleAppResignedActive),
+            name: NSApplication.didResignActiveNotification, object: nil)
     }
 
     private func setupHotkeys() {
         hotkeys.onCapture = { [weak self] in self?.handleCaptureHotkey() }
         hotkeys.onTab     = { [weak self] in self?.handleTabCycle() }
-        hotkeys.onEscape  = { [weak self] in self?.handleEscapeWhileSPXActive() }
+        hotkeys.onEscape  = { [weak self] in self?.handleEscapeHotkey() }
         hotkeys.registerCaptureHotkey()
     }
 
     /// Sync the per-mode conditional hotkeys (Tab / Esc) with current state.
     /// Tab is live only during capture with ≥2 enabled modes (so we don't
-    /// hold the bare Tab key system-wide). Esc is live only when SPX is the
-    /// active capture mode (so it can dismiss the click-through ghost
-    /// overlay; in opaque modes OverlayWindow itself is the key window and
-    /// handles Esc via keyDown).
+    /// hold the bare Tab key system-wide).
+    ///
+    /// Esc stays live for the whole capture, in every mode. It used to be
+    /// registered only for SPX, on the theory that other modes get Esc
+    /// through the overlay's own keyDown — but that needs the overlay to be
+    /// the key window, and any focus loss (another app stealing it, a system
+    /// dialog, a Space switch) left the user with a frozen screen and no way
+    /// out at all.
     private func syncStateHotkeys() {
+        let live = isCapturing || overlay.isShowing
         let tabLive = isCapturing && EnabledModesStore.load().count > 1
-        let escLive = isCapturing && currentMode == .spx
         hotkeys.setTabHotkeyActive(tabLive)
-        hotkeys.setEscapeHotkeyActive(escLive)
+        hotkeys.setEscapeHotkeyActive(live)
     }
 
-    /// Carbon-hotkey Esc dispatcher — closes the overlay and wipes preserved
-    /// segments, mirroring the view's keyDown handler. Reachable even when
-    /// the overlay is in ghost mode (not the key window).
-    fileprivate func handleEscapeWhileSPXActive() {
-        guard isCapturing, currentMode == .spx else { return }
+    /// Carbon-hotkey Esc dispatcher. Tears down the overlay whenever one is
+    /// on screen, regardless of mode or of what the capture state thinks —
+    /// this is the guaranteed way out.
+    fileprivate func handleEscapeHotkey() {
+        guard isCapturing || overlay.isShowing else { return }
+        forceExitCapture()
+    }
+
+    /// Unconditional teardown: overlay down, ghost cleared, hotkeys released,
+    /// popover closed, focus returned. Every escape route calls this.
+    private func forceExitCapture() {
+        overlay.forceInteractive()
         overlay.dismiss()
         cancelCapture()
         updateStatusLabel(nil)
+        modePopover.hide()
+    }
+
+    @objc private func handleAppResignedActive() {
+        // Ghost mode is deliberately unfocused — that's the whole point of it.
+        guard overlay.isShowing, !spxIsGhost else { return }
+        // Ignore the brief flap while the overlay is still coming up.
+        guard Date().timeIntervalSince(captureStartedAt) > 0.8 else { return }
+        yieldOverlay()
+    }
+
+    /// Gets a frozen overlay out of the user's way. In SPX that means ghost
+    /// rather than exit: the screen stops being a screenshot and clicks reach
+    /// the app underneath, but the measurements survive. Other modes have
+    /// nothing to preserve, so they just close.
+    private func yieldOverlay() {
+        if isCapturing, currentMode == .spx, !spxIsGhost {
+            spxIsGhost = true
+            overlay.setSPXGhost(true)
+            lastOverlayActivity = Date()
+            modePopover.hide()
+        } else {
+            forceExitCapture()
+        }
+    }
+
+    // MARK: Watchdog
+
+    /// Runs only while an overlay is on screen. Checks the invariants that,
+    /// when broken, leave the machine unusable — and repairs or tears down
+    /// rather than trusting that no future code path can break them.
+    private func startWatchdog() {
+        stopWatchdog()
+        lastOverlayActivity = Date()
+        let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.watchdogTick()
+        }
+        RunLoop.current.add(t, forMode: .common)
+        watchdog = t
+    }
+
+    private func stopWatchdog() {
+        watchdog?.invalidate()
+        watchdog = nil
+    }
+
+    private func watchdogTick() {
+        guard overlay.isShowing else {
+            // Windows are gone but state says otherwise — resync and stop.
+            if isCapturing { cancelCapture() }
+            stopWatchdog()
+            return
+        }
+
+        // 1. Windows on screen with no capture running: orphaned overlay.
+        if !isCapturing {
+            forceExitCapture()
+            return
+        }
+
+        // 2. Click-through outside ghost: the frozen-screen-but-clickable
+        //    state. Repair immediately rather than wait for an escape.
+        if !spxIsGhost && overlay.hasClickThroughWindow {
+            overlay.forceInteractive()
+        }
+
+        guard !spxIsGhost else { return }
+
+        // 3. The user is clearly driving the machine (mouse moving right now)
+        //    but the overlay hasn't heard an event in seconds. That means our
+        //    events are going somewhere else while our screenshot still
+        //    covers everything — the exact failure being defended against.
+        let systemIdle = CGEventSource.secondsSinceLastEventType(.combinedSessionState,
+                                                                 eventType: .mouseMoved)
+        let overlayIdle = Date().timeIntervalSince(lastOverlayActivity)
+        if overlayIdle > 4.0 && systemIdle < 1.0 {
+            yieldOverlay()
+            return
+        }
+
+        // 4. Backstop: nothing at all reached the overlay for two minutes.
+        //    Either the user walked away or it's wedged; both want it gone.
+        if overlayIdle > 120 {
+            forceExitCapture()
+        }
+    }
+
+    /// Rapid repeated hotkey presses read as "get me out of here" — the
+    /// instinct when the screen is stuck. Three within a second bail out, but
+    /// only when the overlay actually looks wedged: mashing the hotkey to
+    /// spin through modes is normal and must keep working.
+    private func registerHotkeyBurstAndCheckPanic() -> Bool {
+        let now = Date()
+        hotkeyBurst.append(now)
+        hotkeyBurst = hotkeyBurst.filter { now.timeIntervalSince($0) < 1.0 }
+        guard hotkeyBurst.count >= 3, overlaySeemsWedged else { return false }
+        hotkeyBurst.removeAll()
+        return true
+    }
+
+    /// Conservative "this overlay is not healthy" test. Ghost mode is
+    /// intentionally click-through and unfocused, so it never counts.
+    private var overlaySeemsWedged: Bool {
+        guard overlay.isShowing else { return false }
+        if !isCapturing { return true }
+        guard !spxIsGhost else { return false }
+        if overlay.hasClickThroughWindow { return true }
+        if !NSApp.isActive { return true }
+        // Never heard a single event since the overlay came up.
+        return lastOverlayActivity < captureStartedAt
+            && Date().timeIntervalSince(captureStartedAt) > 3.0
     }
 
     fileprivate func handleTabCycle() {
         guard isCapturing, EnabledModesStore.load().count > 1 else { return }
+        lastOverlayActivity = Date()
         cycleMode()
     }
 
@@ -116,6 +273,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handleSPXPreserveHide() {
         isCapturing = false
         spxResumePending = true
+        stopWatchdog()
+        // Without this the Tab and Esc hotkeys stay registered after capture
+        // ends, swallowing both keys system-wide in every other app.
+        syncStateHotkeys()
         updateStatusLabel(nil)
         smartReturnFocus()
     }
@@ -153,15 +314,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 button.title = "OCR"
             }
+            // Left click opens the mode popover, right click the settings
+            // menu. `statusItem.menu` stays unset so the left click reaches
+            // our action instead of being swallowed by the menu.
+            button.target = self
+            button.action = #selector(statusItemClicked)
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
-        rebuildMenu()
     }
 
     private func updateStatusLabel(_ label: String?) {
         statusItem.button?.title = label.map { " \($0)" } ?? ""
     }
 
-    private func rebuildMenu() {
+    @objc private func statusItemClicked() {
+        let event = NSApp.currentEvent
+        let isRightClick = event?.type == .rightMouseUp
+            || event?.modifierFlags.contains(.control) == true
+        if isRightClick {
+            modePopover.hide()
+            showSettingsMenu()
+        } else {
+            modePopover.toggle(enabled: EnabledModesStore.load(),
+                               current: isCapturing ? currentMode : startMode,
+                               statusButton: statusItem.button)
+        }
+    }
+
+    /// Pops the settings menu under the status item. Attaching it to
+    /// `statusItem.menu` only for the duration of the click keeps the left
+    /// click free for the mode popover.
+    private func showSettingsMenu() {
+        statusItem.menu = buildSettingsMenu()
+        statusItem.button?.performClick(nil)
+        statusItem.menu = nil
+    }
+
+    private func buildSettingsMenu() -> NSMenu {
         let menu = NSMenu()
         menu.minimumWidth = 280
 
@@ -215,32 +404,91 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         quitItem.target = self
         menu.addItem(quitItem)
 
-        statusItem.menu = menu
+        return menu
     }
 
     // MARK: Capture Flow
 
     @objc func handleCaptureHotkey() {
+        // Pressing the hotkey is the user talking to the overlay, so it counts
+        // as activity — otherwise the idle checks fire on a session the user
+        // is clearly driving from the keyboard.
+        lastOverlayActivity = Date()
+        if isCapturing || overlay.isShowing {
+            if registerHotkeyBurstAndCheckPanic() {
+                forceExitCapture()
+                return
+            }
+        }
         if isCapturing {
             // In SPX the hotkey toggles ghost/opaque overlay; mode-switching
-            // is now done via the floating mode switcher (or cycle).
+            // is done in the menu-bar popover (or by cycling with Tab).
             if currentMode == .spx {
-                spxIsGhost.toggle()
-                overlay.setSPXGhost(spxIsGhost)
+                if spxIsGhost { leaveSPXGhost() }
+                else {
+                    spxIsGhost = true
+                    overlay.setSPXGhost(true)
+                }
             } else {
                 cycleMode()
             }
+            showModePopover()
         } else {
-            let enabled = EnabledModesStore.load()
-            // spxResumePending only counts if SPX is still in the enabled set —
-            // otherwise the user disabled SPX between sessions, so honor the
-            // current enabled list and drop the stale resume hint.
-            if spxResumePending && !enabled.contains(.spx) {
-                spxResumePending = false
-            }
-            currentMode = spxResumePending ? .spx : (enabled.first ?? .ocr)
+            currentMode = startMode
             startCapture()
         }
+    }
+
+    /// Leaves SPX ghost mode on a freshly shot screen instead of the frame
+    /// captured when the session started. Ghost mode exists so the user can
+    /// go work in another app with the markings floating on top — by the time
+    /// they come back, that original frame shows a screen that's gone.
+    private func leaveSPXGhost() {
+        // Whatever the user was working in while transparent is where focus
+        // should land when they finish measuring, not the app they started from.
+        let front = NSWorkspace.shared.frontmostApplication
+        if front?.bundleIdentifier != Bundle.main.bundleIdentifier { previousApp = front }
+
+        overlay.refreshBackground(capture: { [weak self] in
+            guard let self else { return [] }
+            self.preCaptureScreens()
+            return self.screenImagesForOverlay
+        }, completion: { [weak self] in
+            guard let self else { return }
+            self.spxIsGhost = false
+            // Ghost is click-through, so the overlay heard nothing the whole
+            // time it was transparent. Reset the clock before the idle checks
+            // start applying again.
+            self.lastOverlayActivity = Date()
+            // Ghost mode hands key status back to the other app, so take it
+            // back explicitly — otherwise H/V/T keys go nowhere.
+            NSApp.activate(ignoringOtherApps: true)
+            self.overlay.setSPXGhost(false)
+        })
+    }
+
+    /// Mode a fresh capture session opens in: the SPX session being resumed,
+    /// otherwise the mode the user last worked in, otherwise the first
+    /// enabled one.
+    private var startMode: CaptureMode {
+        let enabled = EnabledModesStore.load()
+        // spxResumePending only counts if SPX is still in the enabled set —
+        // otherwise the user disabled SPX between sessions, so honor the
+        // current enabled list and drop the stale resume hint.
+        if spxResumePending && !enabled.contains(.spx) {
+            spxResumePending = false
+        }
+        if spxResumePending { return .spx }
+        if let last = LastModeStore.load(), enabled.contains(last) { return last }
+        return enabled.first ?? .ocr
+    }
+
+    /// Shows the mode chooser under the menu-bar icon. Single-mode setups
+    /// have nothing to choose, so it stays hidden there.
+    private func showModePopover() {
+        let enabled = EnabledModesStore.load()
+        guard enabled.count >= 2 else { modePopover.hide(); return }
+        modePopover.show(enabled: enabled, current: currentMode, statusButton: statusItem.button)
     }
 
     private func cycleMode() {
@@ -257,35 +505,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return enabled[(idx + 1) % enabled.count]
     }
 
-    private func switchActiveCaptureMode(to mode: CaptureMode, silent: Bool = false) {
+    private func switchActiveCaptureMode(to mode: CaptureMode) {
+        // Single place where ghost is dropped on a mode change. Leaving it to
+        // individual call sites is what let Tab-out-of-ghost strand the
+        // overlay click-through over an opaque screenshot.
+        if spxIsGhost {
+            spxIsGhost = false
+            overlay.forceInteractive()
+        }
         currentMode = mode
-        modeSwitcher.setCurrentMode(mode)
+        LastModeStore.save(mode)
+        modePopover.setCurrentMode(mode)
         syncStateHotkeys()
         switch mode {
         case .ocr:
             overlay.switchToOCRMode()
             overlay.preScanWordBoxes(level: .fast, screenImages: screenImagesForOverlay)
             updateStatusLabel(nil)
-            if !silent { ToastWindow.show("OCR") }
         case .hex:
             overlay.switchToHEXMode { [weak self] hex in
                 self?.handleColorPicked(hex)
             }
             updateStatusLabel("HEX")
-            if !silent { ToastWindow.show("HEX") }
         #if !MAS_BUILD
         case .dom:
             overlay.switchToDOMMode { [weak self] label in
                 self?.handleDOMElementPicked(label)
             }
             updateStatusLabel("DOM")
-            if !silent { ToastWindow.show("DOM") }
             DOMExtractor.getDOMElements(from: previousApp) { [weak self] elements in
                 guard let self else { return }
                 if elements.isEmpty {
                     ToastWindow.show("Open in Safari/Chrome", style: .error)
                     if let next = self.nextEnabledMode(after: .dom) {
-                        self.switchActiveCaptureMode(to: next, silent: true)
+                        self.switchActiveCaptureMode(to: next)
                     } else {
                         self.cancelCapture()
                         self.overlay.dismiss()
@@ -297,7 +550,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .svg:
             overlay.switchToSVGMode()
             updateStatusLabel("SVG")
-            if !silent { ToastWindow.show("SVG") }
             SVGExtractor.getSVGBoundingBoxes(from: previousApp) { [weak self] boxes in
                 self?.overlay.setSVGBoxes(boxes)
             }
@@ -307,7 +559,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.handleSPXSizePicked(label)
             }
             updateStatusLabel("SPX")
-            if !silent { ToastWindow.show("SPX") }
         }
     }
 
@@ -318,15 +569,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         preCaptureScreens()
         isCapturing = true
-        previousApp = NSWorkspace.shared.frontmostApplication
+        captureStartedAt = Date()
+        startWatchdog()
+        LastModeStore.save(currentMode)
+        // Clicking the menu-bar item can bring Quirky forward; in that case
+        // keep whatever app was in front before so focus returns there.
+        let front = NSWorkspace.shared.frontmostApplication
+        if front?.bundleIdentifier != Bundle.main.bundleIdentifier { previousApp = front }
         syncStateHotkeys()
-
-        let enabled = EnabledModesStore.load()
-        if enabled.count >= 2 {
-            modeSwitcher.show(enabled: enabled, current: currentMode, anchorScreen: NSScreen.main)
-        } else {
-            modeSwitcher.hide()
-        }
+        showModePopover()
 
         switch currentMode {
         case .ocr:
@@ -373,7 +624,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if elements.isEmpty {
                     ToastWindow.show("Open in Safari/Chrome", style: .error)
                     if let next = self.nextEnabledMode(after: .dom) {
-                        self.switchActiveCaptureMode(to: next, silent: true)
+                        self.switchActiveCaptureMode(to: next)
                     } else {
                         self.cancelCapture()
                         self.overlay.dismiss()
@@ -400,7 +651,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         spxResumePending = false  // Esc / mode-switch wipes preserved SPX
         spxIsGhost = false
         preCapturedImages = []
-        modeSwitcher.hide()
+        hotkeyBurst.removeAll()
+        stopWatchdog()
+        modePopover.hide()
         syncStateHotkeys()
         smartReturnFocus()
     }
@@ -527,7 +780,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func smartReturnFocus() {
         updateStatusLabel(nil)
-        modeSwitcher.hide()
+        modePopover.hide()
         if NSApp.isActive { previousApp?.activate() }
         previousApp = nil
     }
@@ -544,6 +797,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         EnabledModesStore.save(enabled)
         modeTogglesView?.update(enabled: enabled)
+        // Keep an open popover in sync with the set the user just edited.
+        if modePopover.isVisible {
+            modePopover.show(enabled: enabled,
+                             current: enabled.contains(currentMode) ? currentMode : (enabled.first ?? .ocr),
+                             statusButton: statusItem.button)
+        }
         // Editing the enabled set invalidates any pending SPX resume — the
         // user explicitly chose a different configuration, so the next hotkey
         // should follow it, not jump back into SPX.
@@ -553,23 +812,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func setHighlightColor(_ sender: NSMenuItem) {
         guard let hex = sender.representedObject as? String else { return }
         UserDefaults.standard.set(hex, forKey: "highlightColorHex")
-        rebuildMenu()
     }
 
     @objc private func quitApp() { NSApp.terminate(nil) }
 }
 
-// MARK: - FloatingModeSwitcherDelegate
+// MARK: - ModePopoverDelegate
 
-extension AppDelegate: FloatingModeSwitcherDelegate {
-    func floatingSwitcher(_ switcher: FloatingModeSwitcher, didSelectMode mode: CaptureMode) {
-        guard isCapturing, mode != currentMode else { return }
+extension AppDelegate: ModePopoverDelegate {
+    func modePopover(_ popover: ModePopover, didSelectMode mode: CaptureMode) {
+        LastModeStore.save(mode)
+        // Popover opened straight from the menu bar with nothing running:
+        // picking a mode starts the session in it.
+        guard isCapturing else {
+            currentMode = mode
+            startCapture()
+            return
+        }
+        guard mode != currentMode else { return }
         // Exiting SPX clears its ghost state so a future SPX session starts opaque.
         if currentMode == .spx && mode != .spx {
             spxIsGhost = false
             overlay.setSPXGhost(false)
         }
-        switchActiveCaptureMode(to: mode, silent: true)
+        switchActiveCaptureMode(to: mode)
     }
 }
 

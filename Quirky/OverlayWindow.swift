@@ -15,6 +15,10 @@ final class SelectionView: NSView {
     var onDOMElementPicked: ((String) -> Void)?
     var onSPXSizePicked: ((String) -> Void)?
     var onSPXHide: (() -> Void)?
+    /// Heartbeat for the stuck-overlay watchdog: an overlay that stops
+    /// hearing input while the user is clearly still moving the mouse is a
+    /// dead overlay covering their screen.
+    var onActivity: (() -> Void)?
     var isSVGMode = false
     var isHEXMode = false
     var isDOMMode = false
@@ -54,8 +58,11 @@ final class SelectionView: NSView {
     private var spxLiveH: SPXLiveSegment?
     private var spxLiveV: SPXLiveSegment?
     fileprivate var spxCommitted: [SPXSegment] = []
-    fileprivate var spxColorIndex: Int = 0
-    private var spxToleranceIndex: Int = 2
+    private var spxToleranceIndex: Int = 1
+    /// Shift makes the live rulers ignore every obstacle — detected edges and
+    /// committed geometry alike — so they run the full width/height of the
+    /// screen. That's how you drop a full-screen guide to measure against.
+    private var spxShiftHeld: Bool = false
     private var spxDragOrigin: NSPoint = .zero
     private var spxMoveLast: NSPoint = .zero    // for Space-to-move during a drag
     private var spxIsDragging: Bool = false
@@ -84,25 +91,34 @@ final class SelectionView: NSView {
     private let spxCloseBtnSize: CGFloat = 20
 
     fileprivate struct SPXTolerance {
+        let name: String
         let edgeThreshold: UInt8   // gradient strength — lower catches softer edges
         let minRun: Int            // perpendicular run length to qualify as an edge
+        let contentGradient: UInt8 // what counts as content when snapping a drawn rect
     }
-    /// 8 monotonic steps. Edge-pixel threshold is kept low (6) at every level
-    /// so faint anti-aliased borders (icon-button strokes, low-contrast cards)
-    /// always make it into the run-length map. T controls only minRun — the
-    /// minimum length of contiguous edge a ray will stop at — so the slider
-    /// is really "ignore objects smaller than N pixels". T1 = window-scale
-    /// only; T8 = catch even single-character glyphs.
+    /// Three levels, named after what they snap to. The old eight steps only
+    /// moved `minRun` while the edge threshold stayed pinned at 6, which let
+    /// every level see the same faint gradient noise — so the steps felt
+    /// interchangeable. Each level now moves both knobs together: how strong
+    /// a pixel gradient has to be to count as an edge at all, and how long
+    /// that edge must run before a ruler will stop on it.
+    ///
+    /// Values calibrated against a real dark-theme desktop (terminal + chat +
+    /// browser panels), measuring where the rulers actually land. Note the
+    /// thresholds stay low on purpose: a dark border on a dark background
+    /// only carries a gradient of ~8, so a "strict" threshold like 30 sails
+    /// straight through real window edges and every ruler runs to the screen
+    /// edge.
     fileprivate static let spxToleranceLevels: [SPXTolerance] = [
-        SPXTolerance(edgeThreshold: 6, minRun: 80),
-        SPXTolerance(edgeThreshold: 6, minRun: 50),
-        SPXTolerance(edgeThreshold: 6, minRun: 30),    // default
-        SPXTolerance(edgeThreshold: 6, minRun: 18),
-        SPXTolerance(edgeThreshold: 6, minRun: 10),
-        SPXTolerance(edgeThreshold: 6, minRun:  6),
-        SPXTolerance(edgeThreshold: 5, minRun:  3),
-        SPXTolerance(edgeThreshold: 4, minRun:  2)
+        // Long, structural borders — window frames, sidebars, big panels.
+        SPXTolerance(name: "Window",  edgeThreshold: 12, minRun: 60, contentGradient: 14),
+        // Cards, buttons, inputs, avatars. The sane default.
+        SPXTolerance(name: "Element", edgeThreshold:  8, minRun: 24, contentGradient: 10),
+        // Icons, glyphs, hairlines, anti-aliased strokes.
+        SPXTolerance(name: "Detail",  edgeThreshold:  4, minRun:  4, contentGradient:  5)
     ]
+    private static let spxDefaultToleranceIndex = 1
+    private static let spxToleranceDefaultsKey = "spxToleranceLevel"
 
     fileprivate struct SPXLiveSegment {
         let start: NSPoint       // view coords
@@ -431,6 +447,7 @@ final class SelectionView: NSView {
     // MARK: Mouse
 
     override func mouseMoved(with event: NSEvent) {
+        onActivity?()
         let point = convert(event.locationInWindow, from: nil)
         if isHEXMode {
             hexPoint = point
@@ -446,6 +463,7 @@ final class SelectionView: NSView {
         }
         if isSPXMode {
             spxCursor = point
+            spxShiftHeld = event.modifierFlags.contains(.shift)
             // Hit-test resize handles first — if hovering one, hide the live
             // crosshair so it doesn't fight the handle.
             let newHover = spxHandleHitTest(at: point)
@@ -465,9 +483,19 @@ final class SelectionView: NSView {
 
     override func flagsChanged(with event: NSEvent) {
         super.flagsChanged(with: event)
+        guard isSPXMode else { return }
+        // Shift toggles obstacle-free rulers, and the user usually presses it
+        // without moving the mouse — so recompute here rather than waiting for
+        // the next mouseMoved.
+        let shift = event.modifierFlags.contains(.shift)
+        guard shift != spxShiftHeld else { return }
+        spxShiftHeld = shift
+        if spxActiveHandle == nil && !spxIsDragging { recomputeSPXLiveSegments() }
+        needsDisplay = true
     }
 
     override func mouseDown(with event: NSEvent) {
+        onActivity?()
         if isHEXMode || isDOMMode { return }
         let point = convert(event.locationInWindow, from: nil)
         startPoint = point
@@ -519,6 +547,7 @@ final class SelectionView: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        onActivity?()
         let current = convert(event.locationInWindow, from: nil)
         if isHEXMode {
             hexPoint = current
@@ -595,6 +624,7 @@ final class SelectionView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        onActivity?()
         if isHEXMode {
             let point = convert(event.locationInWindow, from: nil)
             let color = hexColor ?? sampleColor(at: point)
@@ -696,16 +726,17 @@ final class SelectionView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
+        onActivity?()
         if event.keyCode == 53 { onCancel?(); return }      // Esc
         if isSPXMode {
             switch event.keyCode {
             case 4:  commitSPXAxis(.horizontal)              // H
             case 9:  commitSPXAxis(.vertical)                // V
-            case 17: cycleSPXTolerance(event.modifierFlags.contains(.shift) ? -1 : 1) // T
+            case 17: cycleSPXTolerance(1)                    // T — cycles the 3 levels
             case 51: popLastSPXSegment()                     // Backspace — undo last
             case 36, 76:                                     // Return / Enter
                 guard let last = spxCommitted.last else { return }
-                copySPXLengthToPasteboard(last.pxLength)
+                copySPXLengthOrSizeToPasteboard(last)
             default: break
             }
         }
@@ -959,16 +990,18 @@ final class SelectionView: NSView {
         spxLiveH = nil
         spxLiveV = nil
         spxIsGhost = false
+        spxShiftHeld = false
         spxHoveredHandle = nil
         spxActiveHandle = nil
-        // NB: spxCommitted / spxColorIndex are intentionally NOT cleared here.
-        // The OverlayWindow restores prior segments via setSPXState(...) right
-        // after this call when the user re-enters SPX. Esc → dismiss() wipes.
-        // Restore the tolerance index from UserDefaults (clamped).
-        let stored = UserDefaults.standard.object(forKey: "spxToleranceIndex") as? Int
+        // NB: spxCommitted is intentionally NOT cleared here. The
+        // OverlayWindow restores prior segments via restoreSPXState(...)
+        // right after this call when the user re-enters SPX. Esc →
+        // dismiss() wipes.
+        // Restore the tolerance level from UserDefaults (clamped).
+        let stored = UserDefaults.standard.object(forKey: SelectionView.spxToleranceDefaultsKey) as? Int
         let n = SelectionView.spxToleranceLevels.count
         if let s = stored, s >= 0, s < n { spxToleranceIndex = s }
-        else { spxToleranceIndex = 2 }
+        else { spxToleranceIndex = SelectionView.spxDefaultToleranceIndex }
         applySPXToleranceToAnalyzer()
         needsDisplay = true
     }
@@ -979,7 +1012,6 @@ final class SelectionView: NSView {
         spxLiveH = nil
         spxLiveV = nil
         spxCommitted.removeAll()
-        spxColorIndex = 0
         spxIsGhost = false
         spxHoveredHandle = nil
         spxActiveHandle = nil
@@ -1009,11 +1041,11 @@ final class SelectionView: NSView {
         spxAnalyzer?.edgeThreshold = spxCurrentTolerance.edgeThreshold
     }
 
-    /// Cycle tolerance index by `delta` (+1 for T, -1 for Shift+T). Wraps.
+    /// Cycle tolerance level by `delta`. Wraps.
     private func cycleSPXTolerance(_ delta: Int) {
         let n = SelectionView.spxToleranceLevels.count
         spxToleranceIndex = ((spxToleranceIndex + delta) % n + n) % n
-        UserDefaults.standard.set(spxToleranceIndex, forKey: "spxToleranceIndex")
+        UserDefaults.standard.set(spxToleranceIndex, forKey: SelectionView.spxToleranceDefaultsKey)
         applySPXToleranceToAnalyzer()
         recomputeSPXLiveSegments()
         needsDisplay = true
@@ -1036,9 +1068,24 @@ final class SelectionView: NSView {
         return NSPoint(x: CGFloat(px) * sx, y: bounds.height - CGFloat(py) * sy)
     }
 
-    /// Recomputes the live H/V segments at the current cursor by ray-casting in
-    /// the analyzer. Cheap — just two array scans.
+    /// Recomputes the live H/V rulers at the current cursor. Each ruler runs
+    /// out from the cursor until it meets an obstacle: a detected edge in the
+    /// screenshot, or a piece of committed geometry. Holding Shift drops all
+    /// obstacles so the rulers span the whole screen.
     private func recomputeSPXLiveSegments() {
+        guard spxCursor.x > 0 || spxCursor.y > 0 else {
+            spxLiveH = nil; spxLiveV = nil; return
+        }
+        // Shift → full-screen guides, nothing clips them.
+        if spxShiftHeld {
+            spxLiveH = SPXLiveSegment(start: NSPoint(x: 0, y: spxCursor.y),
+                                      end: NSPoint(x: bounds.width, y: spxCursor.y),
+                                      pxLength: Int(bounds.width.rounded()))
+            spxLiveV = SPXLiveSegment(start: NSPoint(x: spxCursor.x, y: bounds.height),
+                                      end: NSPoint(x: spxCursor.x, y: 0),
+                                      pxLength: Int(bounds.height.rounded()))
+            return
+        }
         guard let analyzer = spxAnalyzer,
               let (px, py) = viewToImagePixel(spxCursor) else {
             spxLiveH = nil; spxLiveV = nil; return
@@ -1046,76 +1093,95 @@ final class SelectionView: NSView {
         if let h = analyzer.horizontalExtent(at: px, y: py, minEdgeLength: spxMinEdgeLength) {
             let s = imagePixelToView(h.left, py)
             let e = imagePixelToView(h.right, py)
-            // Committed rects are obstacles too — clip the ray to their edges.
-            let (lx, rx) = clipHorizontalAgainstRects(vy: s.y, cursorX: spxCursor.x,
-                                                      left: s.x, right: e.x)
-            let cs = NSPoint(x: lx, y: s.y), ce = NSPoint(x: rx, y: e.y)
-            spxLiveH = SPXLiveSegment(start: cs, end: ce,
-                                      pxLength: viewLengthToImagePx(lx, rx, axisX: true))
+            let (lx, rx) = clipHorizontal(vy: s.y, cursorX: spxCursor.x, left: s.x, right: e.x)
+            spxLiveH = SPXLiveSegment(start: NSPoint(x: lx, y: s.y),
+                                      end: NSPoint(x: rx, y: e.y),
+                                      pxLength: Int(abs(rx - lx).rounded()))
         } else { spxLiveH = nil }
         if let v = analyzer.verticalExtent(at: px, y: py, minEdgeLength: spxMinEdgeLength) {
             let s = imagePixelToView(px, v.top)
             let e = imagePixelToView(px, v.bottom)
-            let (ty, by) = clipVerticalAgainstRects(vx: s.x, cursorY: spxCursor.y,
-                                                    top: max(s.y, e.y), bottom: min(s.y, e.y))
-            let cs = NSPoint(x: s.x, y: ty), ce = NSPoint(x: e.x, y: by)
-            spxLiveV = SPXLiveSegment(start: cs, end: ce,
-                                      pxLength: viewLengthToImagePx(by, ty, axisX: false))
+            let (ty, by) = clipVertical(vx: s.x, cursorY: spxCursor.y,
+                                        top: max(s.y, e.y), bottom: min(s.y, e.y))
+            spxLiveV = SPXLiveSegment(start: NSPoint(x: s.x, y: ty),
+                                      end: NSPoint(x: e.x, y: by),
+                                      pxLength: Int(abs(ty - by).rounded()))
         } else { spxLiveV = nil }
     }
 
-    /// Returns the committed rects in view coords (skips lines).
-    private var spxCommittedRects: [NSRect] {
-        spxCommitted.compactMap { seg in
-            guard seg.axis == .rect else { return nil }
-            return NSRect(x: seg.start.x, y: seg.start.y,
-                          width: seg.end.x - seg.start.x,
-                          height: seg.end.y - seg.start.y)
+    /// A straight blocker the live rulers stop at. `pos` is the coordinate on
+    /// the ruler's axis (x for vertical blockers, y for horizontal ones);
+    /// `from`/`to` is the span it covers on the other axis, so a blocker only
+    /// counts when the ruler actually crosses it.
+    private struct SPXObstacle {
+        let pos: CGFloat
+        let from: CGFloat
+        let to: CGFloat
+
+        func covers(_ v: CGFloat) -> Bool {
+            v >= min(from, to) - 0.5 && v <= max(from, to) + 0.5
         }
     }
 
-    /// Return a view-space span in logical points (rounded). The name is
-    /// kept for compatibility with existing callers; despite the "Px"
-    /// suffix this is now points, not Retina image pixels, so the value
-    /// matches what designers see in Figma / DevTools.
-    private func viewLengthToImagePx(_ a: CGFloat, _ b: CGFloat, axisX: Bool) -> Int {
-        return Int(abs(b - a).rounded())
+    /// Committed geometry seen by a horizontal ruler: both vertical sides of
+    /// every rect, plus every committed vertical line. This is what makes
+    /// "measure from the guide I just placed to the next element" work —
+    /// previously only rects blocked a ruler, so guide lines were invisible
+    /// to the very measurement they were drawn for.
+    private var spxVerticalObstacles: [SPXObstacle] {
+        var result: [SPXObstacle] = []
+        for seg in spxCommitted {
+            switch seg.axis {
+            case .rect:
+                let y0 = min(seg.start.y, seg.end.y), y1 = max(seg.start.y, seg.end.y)
+                result.append(SPXObstacle(pos: min(seg.start.x, seg.end.x), from: y0, to: y1))
+                result.append(SPXObstacle(pos: max(seg.start.x, seg.end.x), from: y0, to: y1))
+            case .vertical:
+                result.append(SPXObstacle(pos: seg.start.x, from: seg.start.y, to: seg.end.y))
+            case .horizontal:
+                continue    // parallel to the ruler — nothing to stop it
+            }
+        }
+        return result
     }
 
-    /// Clip a horizontal ruler at view-row `vy` to the nearest committed rect
-    /// edge on each side of `cursorX`. If the cursor is inside a rect, the
-    /// ruler is bounded by that rect's own left/right edges.
-    private func clipHorizontalAgainstRects(vy: CGFloat, cursorX: CGFloat,
-                                            left: CGFloat, right: CGFloat) -> (CGFloat, CGFloat) {
-        var l = left, r = right
-        for rect in spxCommittedRects {
-            guard vy >= rect.minY, vy <= rect.maxY else { continue }
-            if rect.maxX <= cursorX {
-                if rect.maxX > l { l = rect.maxX }
-            } else if rect.minX >= cursorX {
-                if rect.minX < r { r = rect.minX }
-            } else {
-                if rect.minX > l { l = rect.minX }
-                if rect.maxX < r { r = rect.maxX }
+    /// Mirror of `spxVerticalObstacles` for vertical rulers.
+    private var spxHorizontalObstacles: [SPXObstacle] {
+        var result: [SPXObstacle] = []
+        for seg in spxCommitted {
+            switch seg.axis {
+            case .rect:
+                let x0 = min(seg.start.x, seg.end.x), x1 = max(seg.start.x, seg.end.x)
+                result.append(SPXObstacle(pos: min(seg.start.y, seg.end.y), from: x0, to: x1))
+                result.append(SPXObstacle(pos: max(seg.start.y, seg.end.y), from: x0, to: x1))
+            case .horizontal:
+                result.append(SPXObstacle(pos: seg.start.y, from: seg.start.x, to: seg.end.x))
+            case .vertical:
+                continue
             }
+        }
+        return result
+    }
+
+    /// Pull a horizontal ruler's ends in to the nearest committed blocker on
+    /// each side of the cursor.
+    private func clipHorizontal(vy: CGFloat, cursorX: CGFloat,
+                                left: CGFloat, right: CGFloat) -> (CGFloat, CGFloat) {
+        var l = left, r = right
+        for ob in spxVerticalObstacles where ob.covers(vy) {
+            if ob.pos < cursorX - 0.5 { l = max(l, ob.pos) }
+            else if ob.pos > cursorX + 0.5 { r = min(r, ob.pos) }
         }
         return (l, r)
     }
 
     /// Vertical analogue. `top` is the larger view-y, `bottom` the smaller.
-    private func clipVerticalAgainstRects(vx: CGFloat, cursorY: CGFloat,
-                                          top: CGFloat, bottom: CGFloat) -> (CGFloat, CGFloat) {
+    private func clipVertical(vx: CGFloat, cursorY: CGFloat,
+                              top: CGFloat, bottom: CGFloat) -> (CGFloat, CGFloat) {
         var t = top, b = bottom
-        for rect in spxCommittedRects {
-            guard vx >= rect.minX, vx <= rect.maxX else { continue }
-            if rect.maxY <= cursorY {
-                if rect.maxY > b { b = rect.maxY }
-            } else if rect.minY >= cursorY {
-                if rect.minY < t { t = rect.minY }
-            } else {
-                if rect.maxY < t { t = rect.maxY }
-                if rect.minY > b { b = rect.minY }
-            }
+        for ob in spxHorizontalObstacles where ob.covers(vx) {
+            if ob.pos < cursorY - 0.5 { b = max(b, ob.pos) }
+            else if ob.pos > cursorY + 0.5 { t = min(t, ob.pos) }
         }
         return (t, b)
     }
@@ -1168,7 +1234,11 @@ final class SelectionView: NSView {
         let inset: CGFloat = 2
         let scanRect = imgRect.insetBy(dx: inset, dy: inset)
         guard scanRect.width > 4, scanRect.height > 4 else { return raw }
-        guard let inner = analyzer.contentBoundsIn(scanRect, minGradient: 12) else {
+        // Same tolerance the rulers use, so T means one thing across the mode:
+        // at Window level a drawn rect hugs hard borders only, at Detail level
+        // it grabs faint icon strokes too.
+        guard let inner = analyzer.contentBoundsIn(scanRect,
+                                                   minGradient: spxCurrentTolerance.contentGradient) else {
             return raw
         }
         // Don't accept a snap that collapses the rect to nothing — that means
@@ -1265,12 +1335,11 @@ final class SelectionView: NSView {
                 height: from.height + (to.height - from.height) * CGFloat(eased)
             )
             let seg = self.spxCommitted[index]
-            var pxW = Int(r.width.rounded())
-            var pxH = Int(r.height.rounded())
-            if let img = self.backgroundImage {
-                pxW = Int((r.width  * CGFloat(img.width)  / self.bounds.width).rounded())
-                pxH = Int((r.height * CGFloat(img.height) / self.bounds.height).rounded())
-            }
+            // Logical points, same unit as every other SPX readout. This used
+            // to convert to Retina image pixels, so a double-click magnetize
+            // silently doubled the numbers on a 2x display.
+            let pxW = Int(r.width.rounded())
+            let pxH = Int(r.height.rounded())
             self.spxCommitted[index] = SPXSegment(
                 axis: .rect,
                 start: NSPoint(x: r.minX, y: r.minY),
@@ -1311,14 +1380,12 @@ final class SelectionView: NSView {
     private func popLastSPXSegment() {
         guard !spxCommitted.isEmpty else { return }
         spxCommitted.removeLast()
-        if spxColorIndex > 0 { spxColorIndex -= 1 }
         needsDisplay = true
     }
 
     private func deleteSPXSegment(at index: Int) {
         guard index < spxCommitted.count else { return }
         spxCommitted.remove(at: index)
-        if spxColorIndex > 0 { spxColorIndex -= 1 }
         spxHoverSegIndex = nil
         spxShowCloseForIndex = nil
         spxCloseTimer?.invalidate()
@@ -1403,6 +1470,7 @@ final class SelectionView: NSView {
             }
 
             drawSPXToleranceChip(context: context)
+            if spxCommitted.isEmpty { drawSPXHint(context: context) }
 
             // Hover-revealed close (×) button.
             if let idx = spxShowCloseForIndex, let cr = spxCloseButtonRect(for: idx) {
@@ -1510,12 +1578,13 @@ final class SelectionView: NSView {
         context.restoreGState()
     }
 
-    /// Top-right chip: "T  ▮▮▮▯▯  12 px" — visualizes the current tolerance level.
+    /// Top-right chip: "T  Element  ▮▮▯" — names the level instead of just
+    /// numbering it, so the key tells you what it will snap to.
     private func drawSPXToleranceChip(context: CGContext) {
         let levels = SelectionView.spxToleranceLevels
         let current = spxToleranceIndex
         let white = NSColor(deviceRed: 1, green: 1, blue: 1, alpha: 1).cgColor
-        let labelText = "T  \(current + 1)/\(levels.count)"
+        let labelText = "T  \(levels[current].name)"
         let ctLine = SelectionView.makeCTLine(labelText, font: SelectionView.spxLabelFont, color: white)
         let lb = CTLineGetBoundsWithOptions(ctLine, [])
 
@@ -1556,6 +1625,32 @@ final class SelectionView: NSView {
             context.fillPath()
             context.restoreGState()
         }
+    }
+
+    /// Bottom-center key hint. Shown only until the first measurement lands:
+    /// after that the keys are known and the strip would just sit on top of
+    /// whatever is being measured.
+    private func drawSPXHint(context: CGContext) {
+        let text = "H / V  ruler     ⇧  ignore obstacles     T  tolerance     ⌫  undo     esc  exit"
+        let color = NSColor(deviceRed: 1, green: 1, blue: 1, alpha: 0.75).cgColor
+        let line = SelectionView.makeCTLine(text, font: SelectionView.spxHintFont, color: color)
+        let lb = CTLineGetBoundsWithOptions(line, [])
+
+        let hPad: CGFloat = 12, vPad: CGFloat = 7
+        let w = lb.width + hPad * 2
+        let h = lb.height + vPad * 2
+        let x = (bounds.width - w) / 2
+        let y: CGFloat = 18
+
+        let bg = CGRect(x: x, y: y, width: w, height: h)
+        context.saveGState()
+        context.addPath(CGPath(roundedRect: bg, cornerWidth: h / 2, cornerHeight: h / 2, transform: nil))
+        context.setFillColor(NSColor(deviceRed: 0, green: 0, blue: 0, alpha: 0.66).cgColor)
+        context.fillPath()
+        context.restoreGState()
+
+        context.textPosition = CGPoint(x: x + hPad - lb.minX, y: y + vPad - lb.minY)
+        CTLineDraw(line, context)
     }
 
     /// Axis-aligned measurement line with rounded caps and endpoint handles.
@@ -1756,11 +1851,18 @@ final class OverlayWindow {
     private var windows: [NSWindow] = []
     private var completion: ((CGRect) -> Void)?
     private var cancellation: (() -> Void)?
+    /// Single source of truth for click-through. See `setSPXGhost`.
+    private(set) var isGhost = false
+    /// True while overlay windows are on screen. The watchdog uses this to
+    /// tell "capture is running" from "windows are stuck on screen".
+    var isShowing: Bool { !windows.isEmpty }
+    /// Fired on every mouse/keyboard event the overlay receives, so the
+    /// watchdog can tell a live overlay from a deaf one.
+    var onActivity: (() -> Void)?
 
     // SPX state preserved across click-to-hide → re-open cycle.
     // Wiped by dismiss() (Esc / mode switch / final pick).
     fileprivate var spxPreservedSegments: [SelectionView.SPXSegment] = []
-    fileprivate var spxPreservedColorIndex: Int = 0
     /// AppDelegate hooks this to reset its capture-state machine when the user
     /// clicks to dismiss SPX while keeping segments alive.
     var onSPXPreserveHide: (() -> Void)?
@@ -1813,6 +1915,7 @@ final class OverlayWindow {
     // MARK: Mode switching (mid-capture)
 
     func switchToOCRMode() {
+        forceInteractive()
         for window in windows {
             guard let view = window.contentView as? SelectionView else { continue }
             view.isSVGMode = false
@@ -1826,6 +1929,7 @@ final class OverlayWindow {
     }
 
     func switchToSVGMode() {
+        forceInteractive()
         for window in windows {
             guard let view = window.contentView as? SelectionView else { continue }
             view.isSVGMode = true
@@ -1839,6 +1943,7 @@ final class OverlayWindow {
     }
 
     func switchToHEXMode(onColorPicked: @escaping (String) -> Void) {
+        forceInteractive()
         let handler = wrappedColorPicked(onColorPicked)
         for window in windows {
             guard let view = window.contentView as? SelectionView else { continue }
@@ -1853,6 +1958,7 @@ final class OverlayWindow {
     }
 
     func switchToDOMMode(onElementPicked: @escaping (String) -> Void) {
+        forceInteractive()
         let handler = wrappedDOMElementPicked(onElementPicked)
         for window in windows {
             guard let view = window.contentView as? SelectionView else { continue }
@@ -1867,6 +1973,7 @@ final class OverlayWindow {
     }
 
     func switchToSPXMode(onSizePicked: @escaping (String) -> Void) {
+        forceInteractive()
         let handler = wrappedSPXSizePicked(onSizePicked)
         for window in windows {
             guard let view = window.contentView as? SelectionView else { continue }
@@ -1881,17 +1988,25 @@ final class OverlayWindow {
         }
     }
 
-    /// Hide the overlay without invoking the cancellation callback. Preserves
-    /// SPX segments so the next showForSPX / switchToSPXMode restores them.
-    /// Toggles SPX overlay between opaque-interactive and ghost (click-through,
-    /// no background image, segments rendered translucent over the live screen).
+    /// Toggles the SPX overlay between opaque-interactive and ghost
+    /// (click-through, no background image, segments rendered translucent
+    /// over the live screen).
+    ///
+    /// Click-through is only ever legal while ghost is live. It used to be
+    /// set here per-window and cleared only on one specific exit path, so
+    /// switching modes out of ghost (Tab, hotkey cycle) left the overlay
+    /// click-through while the new mode painted an opaque screenshot: the
+    /// screen froze, clicks fell through to whatever was underneath, and
+    /// there was no way out. `isGhost` is now the single source of truth and
+    /// `applyInteractivity()` the only writer of `ignoresMouseEvents`.
     func setSPXGhost(_ ghost: Bool) {
+        isGhost = ghost
         for window in windows {
-            guard let view = window.contentView as? SelectionView, view.isSPXMode else { continue }
-            window.ignoresMouseEvents = ghost
-            view.spxIsGhost = ghost
+            guard let view = window.contentView as? SelectionView else { continue }
+            view.spxIsGhost = ghost && view.isSPXMode
             view.needsDisplay = true
         }
+        applyInteractivity()
         if ghost {
             NSCursor.arrow.set()
             windows.first?.resignKey()
@@ -1901,11 +2016,70 @@ final class OverlayWindow {
         }
     }
 
+    /// Drops ghost unconditionally and puts the overlay back in the
+    /// interactive state. Every mode switch runs through here, so no path can
+    /// leave a mode holding another mode's ghost flag.
+    func forceInteractive() {
+        guard isGhost || hasClickThroughWindow else { return }
+        setSPXGhost(false)
+    }
+
+    /// True when any overlay window is passing clicks through. Outside ghost
+    /// this is the signature of the frozen-screen bug and the watchdog
+    /// repairs it on sight.
+    var hasClickThroughWindow: Bool {
+        windows.contains { $0.ignoresMouseEvents }
+    }
+
+    /// Sole writer of `ignoresMouseEvents`.
+    private func applyInteractivity() {
+        for window in windows { window.ignoresMouseEvents = isGhost }
+    }
+
+    /// Swaps a freshly shot screen in as the frozen backdrop, keeping SPX
+    /// markings and their coordinates. Used when leaving ghost mode: the user
+    /// went transparent to work in another app, so the shot taken when the
+    /// session started is stale by definition, and measuring against it would
+    /// measure a screen that no longer exists.
+    ///
+    /// The overlay windows are pulled off-screen for the shot — otherwise our
+    /// own rulers get baked into the new backdrop and the analyzer reads them
+    /// as edges.
+    func refreshBackground(capture: @escaping () -> [(displayID: CGDirectDisplayID, image: CGImage)],
+                           completion: @escaping () -> Void) {
+        guard !windows.isEmpty else { completion(); return }
+        // Resolve each window's display before hiding it: a window that isn't
+        // on screen reports no `screen`.
+        let displayIDs = windows.map { displayID(for: $0) }
+        for window in windows { window.orderOut(nil) }
+        // One beat for the compositor to drop our windows before re-shooting.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { [weak self] in
+            guard let self else { completion(); return }
+            let imageByDisplay = Dictionary(uniqueKeysWithValues: capture().map { ($0.displayID, $0.image) })
+            for (i, window) in self.windows.enumerated() {
+                if let view = window.contentView as? SelectionView,
+                   let id = displayIDs[i],
+                   let image = imageByDisplay[id] {
+                    view.backgroundImage = image   // rebuilds the SPX analyzer
+                    view.needsDisplay = true
+                }
+                window.orderFrontRegardless()
+            }
+            completion()
+        }
+    }
+
+    private func displayID(for window: NSWindow) -> CGDirectDisplayID? {
+        let center = CGPoint(x: window.frame.midX, y: window.frame.midY)
+        let screen = NSScreen.screens.first { $0.frame.contains(center) } ?? window.screen
+        return screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
+    }
+
     func hidePreservingSPX() {
         if let view = windows.first?.contentView as? SelectionView, view.isSPXMode {
             spxPreservedSegments = view.spxCommitted
-            spxPreservedColorIndex = view.spxColorIndex
         }
+        isGhost = false
         for window in windows { window.orderOut(nil) }
         NSCursor.arrow.set()
         windows.removeAll()
@@ -1917,7 +2091,6 @@ final class OverlayWindow {
     fileprivate func restoreSPXState(into view: SelectionView) {
         guard !spxPreservedSegments.isEmpty else { return }
         view.spxCommitted = spxPreservedSegments
-        view.spxColorIndex = spxPreservedColorIndex
         view.needsDisplay = true
     }
 
@@ -2015,19 +2188,26 @@ final class OverlayWindow {
     #endif
 
     func dismiss() {
+        isGhost = false
         for window in windows { window.orderOut(nil) }
         NSCursor.arrow.set()
         windows.removeAll()
         // Explicit dismiss (Esc, final pick, mode switch) wipes preserved SPX
         // state — only click-hide via hidePreservingSPX preserves it.
         spxPreservedSegments.removeAll()
-        spxPreservedColorIndex = 0
     }
 
     // MARK: Private
 
     private func showOverlay(isSVG: Bool, screenImages: [(displayID: CGDirectDisplayID, image: CGImage)], onComplete: @escaping (CGRect) -> Void, onCancel: @escaping () -> Void, immediate: Bool) {
         NSCursor.crosshair.set()
+        isGhost = false
+        // Never stack overlays. If a previous session left windows on screen
+        // (state desync, a path that skipped dismiss), showing another set on
+        // top would bury them: invisible, unreachable, still swallowing the
+        // screen. Tear down whatever is there first.
+        for window in windows { window.orderOut(nil) }
+        windows.removeAll()
         self.completion = onComplete
         self.cancellation = onCancel
         let imageByDisplay = Dictionary(uniqueKeysWithValues: screenImages.map { ($0.displayID, $0.image) })
@@ -2053,6 +2233,7 @@ final class OverlayWindow {
                 else { DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { self.completion?(cgRect) } }
             }
             view.onCancel = { [weak self] in self?.dismiss(); self?.cancellation?() }
+            view.onActivity = { [weak self] in self?.onActivity?() }
             window.contentView = view
             windows.append(window)
             window.makeKeyAndOrderFront(nil)
