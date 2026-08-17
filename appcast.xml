@@ -4,6 +4,30 @@
         <title>Quirky Updates</title>
         <language>en</language>
     <item>
+      <title>Version 1.1.0</title>
+      <!-- sparkle:version is the build number: Sparkle compares it against the
+           installed CFBundleVersion, and shipped builds carry 5 there. -->
+      <sparkle:version>6</sparkle:version>
+      <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+      <pubDate>Mon, 17 Aug 2026 12:00:00 +0000</pubDate>
+      <description><![CDATA[
+        <h2>Quirky v1.1.0</h2>
+        <ul>
+          <li>Mode switching moved to the menu bar: left click for the mode picker, right click for settings</li>
+          <li>Capture reopens in the mode you used last</li>
+          <li>Fixed the overlay getting stuck as a frozen screen with clicks falling through it</li>
+          <li>Esc now exits capture in every mode, even when the overlay lost focus</li>
+          <li>SPX: rulers stop at guides you placed, Shift ignores obstacles, three calibrated snap levels</li>
+          <li>SPX: leaving ghost mode re-shoots the screen instead of restoring a stale frame</li>
+        </ul>
+      ]]></description>
+      <enclosure
+        url="https://github.com/halinskiy/Quirky/releases/download/v1.1.0/Quirky-1.1.0.zip"
+        sparkle:edSignature="gGzEnxlV5/L0acD0anCTPutgp75SzbmLU0wHAVZYQ4zfahuFGP2zvY/4b6OksJ/h2Eucrh3kJPWMEwRKp99dAg==" length="1683112"
+        type="application/octet-stream" />
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+    </item>
+    <item>
       <title>Version 1.0.1</title>
       <sparkle:version>1.0.1</sparkle:version>
       <sparkle:shortVersionString>1.0.1</sparkle:shortVersionString>
