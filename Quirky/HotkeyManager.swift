@@ -17,6 +17,7 @@ final class HotkeyManager {
         case capture = 1   // ⌘⇧1 — always registered while the app runs
         case tab = 2       // Tab — registered only during capture w/ ≥2 modes
         case escape = 3    // Esc — registered only while SPX is the active mode
+        case shiftTab = 4  // ⇧Tab — same window as Tab, cycles the other way
     }
 
     /// FourCharCode 'QRKY' for hotkey signature.
@@ -24,10 +25,12 @@ final class HotkeyManager {
 
     var onCapture: (() -> Void)?
     var onTab: (() -> Void)?
+    var onShiftTab: (() -> Void)?
     var onEscape: (() -> Void)?
 
     private var captureRef: EventHotKeyRef?
     private var tabRef: EventHotKeyRef?
+    private var shiftTabRef: EventHotKeyRef?
     private var escRef: EventHotKeyRef?
     private var handlerRef: EventHandlerRef?
 
@@ -52,16 +55,23 @@ final class HotkeyManager {
         )
     }
 
-    /// Tab cycles modes during capture; only register when capture is
-    /// active AND there's more than one mode to cycle to. Outside that
-    /// window Tab passes through to the focused app.
+    /// Tab cycles modes forward during capture, ⇧Tab backward; only register
+    /// when capture is active AND there's more than one mode to cycle to.
+    /// Outside that window both pass through to the focused app.
+    ///
+    /// Carbon matches modifiers exactly, so ⇧Tab needs its own registration —
+    /// the bare-Tab hotkey never fires while Shift is down.
     func setTabHotkeyActive(_ active: Bool) {
         if active {
-            guard tabRef == nil else { return }
-            tabRef = register(id: .tab, keyCode: UInt32(kVK_Tab), modifiers: 0)
-        } else if let ref = tabRef {
-            UnregisterEventHotKey(ref)
-            tabRef = nil
+            if tabRef == nil {
+                tabRef = register(id: .tab, keyCode: UInt32(kVK_Tab), modifiers: 0)
+            }
+            if shiftTabRef == nil {
+                shiftTabRef = register(id: .shiftTab, keyCode: UInt32(kVK_Tab), modifiers: UInt32(shiftKey))
+            }
+        } else {
+            if let ref = tabRef { UnregisterEventHotKey(ref); tabRef = nil }
+            if let ref = shiftTabRef { UnregisterEventHotKey(ref); shiftTabRef = nil }
         }
     }
 
@@ -81,6 +91,7 @@ final class HotkeyManager {
     func unregisterAll() {
         if let ref = captureRef { UnregisterEventHotKey(ref); captureRef = nil }
         if let ref = tabRef { UnregisterEventHotKey(ref); tabRef = nil }
+        if let ref = shiftTabRef { UnregisterEventHotKey(ref); shiftTabRef = nil }
         if let ref = escRef { UnregisterEventHotKey(ref); escRef = nil }
     }
 
@@ -129,10 +140,11 @@ final class HotkeyManager {
                 let id = HotkeyID(rawValue: hotKeyID.id)
                 DispatchQueue.main.async {
                     switch id {
-                    case .capture: mgr.onCapture?()
-                    case .tab:     mgr.onTab?()
-                    case .escape:  mgr.onEscape?()
-                    case .none:    break
+                    case .capture:  mgr.onCapture?()
+                    case .tab:      mgr.onTab?()
+                    case .shiftTab: mgr.onShiftTab?()
+                    case .escape:   mgr.onEscape?()
+                    case .none:     break
                     }
                 }
                 return noErr

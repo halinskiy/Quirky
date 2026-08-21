@@ -28,7 +28,7 @@ Rulers stop at whatever they meet first: a detected edge, or a measurement you a
 
 ## Mode picker
 
-Enable the modes you use in the settings menu (right-click the menu-bar icon). Press <kbd>⌘⇧1</kbd> — capture opens in the mode you used last, and a picker drops down from the menu-bar icon with a chip per enabled mode. Click a chip to switch tools without leaving capture, or click the icon any time to open the picker and start a session straight from it. The picker closes as soon as you start working. <kbd>Tab</kbd> still cycles modes during capture.
+Enable the modes you use in the settings menu (right-click the menu-bar icon). Press <kbd>⌘⇧1</kbd> — capture opens in the mode you used last, and a picker drops down from the menu-bar icon with a chip per enabled mode. Click a chip to switch tools without leaving capture, or click the icon any time to open the picker and start a session straight from it. The picker closes as soon as you start working. <kbd>Tab</kbd> cycles modes forward during capture, <kbd>⇧Tab</kbd> backward.
 
 ## Installation
 

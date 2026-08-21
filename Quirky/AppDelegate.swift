@@ -99,6 +99,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !PermissionManager.hasScreenRecordingPermission { PermissionManager.requestScreenRecordingPermission() }
         setupHotkeys()
         overlay.onSPXPreserveHide = { [weak self] in self?.handleSPXPreserveHide() }
+        // Rect selections are routed by the mode that is active when the drag
+        // ends, not by the one the session started in.
+        overlay.onRectSelected = { [weak self] rect in self?.handleCaptureComplete(rect) }
         overlay.onActivity = { [weak self] in self?.lastOverlayActivity = Date() }
         modePopover.onActivity = { [weak self] in self?.lastOverlayActivity = Date() }
         modePopover.delegate = self
@@ -112,7 +115,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupHotkeys() {
         hotkeys.onCapture = { [weak self] in self?.handleCaptureHotkey() }
-        hotkeys.onTab     = { [weak self] in self?.handleTabCycle() }
+        hotkeys.onTab     = { [weak self] in self?.handleTabCycle(step: 1) }
+        hotkeys.onShiftTab = { [weak self] in self?.handleTabCycle(step: -1) }
         hotkeys.onEscape  = { [weak self] in self?.handleEscapeHotkey() }
         hotkeys.registerCaptureHotkey()
     }
@@ -262,10 +266,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             && Date().timeIntervalSince(captureStartedAt) > 3.0
     }
 
-    fileprivate func handleTabCycle() {
+    fileprivate func handleTabCycle(step: Int) {
         guard isCapturing, EnabledModesStore.load().count > 1 else { return }
         lastOverlayActivity = Date()
-        cycleMode()
+        cycleMode(step: step)
+        showModePopover()
     }
 
     /// Called when SPX is dismissed via click — overlay closes but the segments
@@ -491,18 +496,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         modePopover.show(enabled: enabled, current: currentMode, statusButton: statusItem.button)
     }
 
-    private func cycleMode() {
-        guard let next = nextEnabledMode(after: currentMode) else { return }
+    private func cycleMode(step: Int = 1) {
+        guard let next = nextEnabledMode(after: currentMode, step: step) else { return }
         switchActiveCaptureMode(to: next)
     }
 
-    /// Returns the next enabled mode in the canonical cycle, or `nil` if `current`
-    /// is the only enabled mode.
-    private func nextEnabledMode(after current: CaptureMode) -> CaptureMode? {
+    /// Returns the neighbouring enabled mode in the canonical cycle (`step` 1
+    /// forward, -1 back), or `nil` if `current` is the only enabled mode.
+    private func nextEnabledMode(after current: CaptureMode, step: Int = 1) -> CaptureMode? {
         let enabled = EnabledModesStore.load()
         guard enabled.count > 1 else { return nil }
-        let idx = enabled.firstIndex(of: current) ?? -1
-        return enabled[(idx + 1) % enabled.count]
+        // A mode that isn't in the enabled set has no neighbours — fall back to
+        // the head of the list rather than counting from a phantom position.
+        guard let idx = enabled.firstIndex(of: current) else { return enabled.first }
+        let count = enabled.count
+        return enabled[((idx + step) % count + count) % count]
     }
 
     private func switchActiveCaptureMode(to mode: CaptureMode) {
@@ -581,18 +589,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         switch currentMode {
         case .ocr:
-            overlay.showFast(screenImages: screenImagesForOverlay, onComplete: { [weak self] rect in
-                self?.handleCaptureComplete(rect)
-            }, onCancel: { [weak self] in
+            overlay.showFast(screenImages: screenImagesForOverlay, onCancel: { [weak self] in
                 self?.cancelCapture()
             })
 
         #if !MAS_BUILD
         case .svg:
             updateStatusLabel("SVG")
-            overlay.showForSVG(screenImages: screenImagesForOverlay, onComplete: { [weak self] rect in
-                self?.handleCaptureComplete(rect)
-            }, onCancel: { [weak self] in
+            overlay.showForSVG(screenImages: screenImagesForOverlay, onCancel: { [weak self] in
                 self?.updateStatusLabel(nil)
                 self?.cancelCapture()
             })
@@ -690,14 +694,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         smartReturnFocus()
     }
 
+    /// Only OCR and SVG finish on a dragged rect. HEX / DOM / SPX pick on
+    /// mouse-up without ever completing a selection, so they land here only if
+    /// something desyncs — ignoring them is the safe read.
     private func handleCaptureComplete(_ cgRect: CGRect) {
         switch currentMode {
-        case .ocr, .hex: performPreCapturedOCR(on: cgRect)
+        case .ocr: performPreCapturedOCR(on: cgRect)
         #if !MAS_BUILD
         case .svg: performSVGExtraction(on: cgRect)
-        case .dom: break // DOM mode picks via onElementPicked, never triggers onComplete
+        case .dom: break
         #endif
-        case .spx: break // SPX mode picks via onSizePicked, never triggers onComplete
+        case .hex, .spx: break
         }
     }
 

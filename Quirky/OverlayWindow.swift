@@ -1849,7 +1849,12 @@ private final class KeyWindow: NSWindow {
 
 final class OverlayWindow {
     private var windows: [NSWindow] = []
-    private var completion: ((CGRect) -> Void)?
+    /// Rect selections (OCR / SVG) land here. This is a property set once by
+    /// AppDelegate, not a per-show parameter, because the mode a session
+    /// STARTS in is not the mode it ENDS in: HEX / DOM / SPX used to install a
+    /// no-op completion at show time, so switching to OCR mid-session left
+    /// every drag going nowhere and the clipboard holding its old contents.
+    var onRectSelected: ((CGRect) -> Void)?
     private var cancellation: (() -> Void)?
     /// Single source of truth for click-through. See `setSPXGhost`.
     private(set) var isGhost = false
@@ -1869,17 +1874,17 @@ final class OverlayWindow {
 
     // MARK: Show methods
 
-    func showFast(screenImages: [(displayID: CGDirectDisplayID, image: CGImage)], onComplete: @escaping (CGRect) -> Void, onCancel: @escaping () -> Void) {
-        showOverlay(isSVG: false, screenImages: screenImages, onComplete: onComplete, onCancel: onCancel, immediate: true)
+    func showFast(screenImages: [(displayID: CGDirectDisplayID, image: CGImage)], onCancel: @escaping () -> Void) {
+        showOverlay(isSVG: false, screenImages: screenImages, onCancel: onCancel)
         preScanWordBoxes(level: .fast, screenImages: screenImages)
     }
 
-    func showForSVG(screenImages: [(displayID: CGDirectDisplayID, image: CGImage)], onComplete: @escaping (CGRect) -> Void, onCancel: @escaping () -> Void) {
-        showOverlay(isSVG: true, screenImages: screenImages, onComplete: onComplete, onCancel: onCancel, immediate: true)
+    func showForSVG(screenImages: [(displayID: CGDirectDisplayID, image: CGImage)], onCancel: @escaping () -> Void) {
+        showOverlay(isSVG: true, screenImages: screenImages, onCancel: onCancel)
     }
 
     func showForHEX(screenImages: [(displayID: CGDirectDisplayID, image: CGImage)], onColorPicked: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
-        showOverlay(isSVG: false, screenImages: screenImages, onComplete: { _ in }, onCancel: onCancel, immediate: true)
+        showOverlay(isSVG: false, screenImages: screenImages, onCancel: onCancel)
         let handler = wrappedColorPicked(onColorPicked)
         for window in windows {
             if let view = window.contentView as? SelectionView {
@@ -1890,7 +1895,7 @@ final class OverlayWindow {
     }
 
     func showForDOM(screenImages: [(displayID: CGDirectDisplayID, image: CGImage)], onElementPicked: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
-        showOverlay(isSVG: false, screenImages: screenImages, onComplete: { _ in }, onCancel: onCancel, immediate: true)
+        showOverlay(isSVG: false, screenImages: screenImages, onCancel: onCancel)
         let handler = wrappedDOMElementPicked(onElementPicked)
         for window in windows {
             if let view = window.contentView as? SelectionView {
@@ -1901,7 +1906,7 @@ final class OverlayWindow {
     }
 
     func showForSPX(screenImages: [(displayID: CGDirectDisplayID, image: CGImage)], onSizePicked: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
-        showOverlay(isSVG: false, screenImages: screenImages, onComplete: { _ in }, onCancel: onCancel, immediate: true)
+        showOverlay(isSVG: false, screenImages: screenImages, onCancel: onCancel)
         let handler = wrappedSPXSizePicked(onSizePicked)
         for window in windows {
             if let view = window.contentView as? SelectionView {
@@ -2199,7 +2204,7 @@ final class OverlayWindow {
 
     // MARK: Private
 
-    private func showOverlay(isSVG: Bool, screenImages: [(displayID: CGDirectDisplayID, image: CGImage)], onComplete: @escaping (CGRect) -> Void, onCancel: @escaping () -> Void, immediate: Bool) {
+    private func showOverlay(isSVG: Bool, screenImages: [(displayID: CGDirectDisplayID, image: CGImage)], onCancel: @escaping () -> Void) {
         NSCursor.crosshair.set()
         isGhost = false
         // Never stack overlays. If a previous session left windows on screen
@@ -2208,7 +2213,6 @@ final class OverlayWindow {
         // screen. Tear down whatever is there first.
         for window in windows { window.orderOut(nil) }
         windows.removeAll()
-        self.completion = onComplete
         self.cancellation = onCancel
         let imageByDisplay = Dictionary(uniqueKeysWithValues: screenImages.map { ($0.displayID, $0.image) })
         for screen in NSScreen.screens {
@@ -2229,8 +2233,7 @@ final class OverlayWindow {
             view.onComplete = { [weak self] cgRect in
                 guard let self else { return }
                 self.dismiss()
-                if immediate { self.completion?(cgRect) }
-                else { DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { self.completion?(cgRect) } }
+                self.onRectSelected?(cgRect)
             }
             view.onCancel = { [weak self] in self?.dismiss(); self?.cancellation?() }
             view.onActivity = { [weak self] in self?.onActivity?() }
