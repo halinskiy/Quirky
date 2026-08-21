@@ -152,7 +152,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlay.forceInteractive()
         overlay.dismiss()
         cancelCapture()
-        updateStatusLabel(nil)
         modePopover.hide()
     }
 
@@ -282,7 +281,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Without this the Tab and Esc hotkeys stay registered after capture
         // ends, swallowing both keys system-wide in every other app.
         syncStateHotkeys()
-        updateStatusLabel(nil)
         smartReturnFocus()
     }
 
@@ -310,6 +308,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupStatusItem() {
+        // Icon only, never a text label. Spelling the active mode out next to
+        // the icon cost more than it was worth: `variableLength` re-measures on
+        // every title change, menu-bar extras are packed right to left, and
+        // AppKit applies the new width a beat later — so every mode switch
+        // anchored the picker to a stale frame and the panel hopped sideways.
+        // The label was invisible during capture anyway: the overlay covers the
+        // menu bar with the frozen screenshot it was taken from. The picker
+        // names the mode instead.
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             if let image = NSImage(systemSymbolName: "text.viewfinder", accessibilityDescription: "Quirky") {
@@ -326,10 +332,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.action = #selector(statusItemClicked)
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
-    }
-
-    private func updateStatusLabel(_ label: String?) {
-        statusItem.button?.title = label.map { " \($0)" } ?? ""
     }
 
     @objc private func statusItemClicked() {
@@ -496,7 +498,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         modePopover.show(enabled: enabled, current: currentMode, statusButton: statusItem.button)
     }
 
+    /// Direction of the last Tab / ⇧Tab. DOM bails out to a neighbouring mode
+    /// when no browser is in front, and it has to keep going the way the user
+    /// was headed: bouncing forward always meant ⇧Tab into DOM threw you right
+    /// back where you came from, with no way past it.
+    private var cycleDirection = 1
+
     private func cycleMode(step: Int = 1) {
+        cycleDirection = step
         guard let next = nextEnabledMode(after: currentMode, step: step) else { return }
         switchActiveCaptureMode(to: next)
     }
@@ -529,23 +538,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .ocr:
             overlay.switchToOCRMode()
             overlay.preScanWordBoxes(level: .fast, screenImages: screenImagesForOverlay)
-            updateStatusLabel(nil)
         case .hex:
             overlay.switchToHEXMode { [weak self] hex in
                 self?.handleColorPicked(hex)
             }
-            updateStatusLabel("HEX")
         #if !MAS_BUILD
         case .dom:
             overlay.switchToDOMMode { [weak self] label in
                 self?.handleDOMElementPicked(label)
             }
-            updateStatusLabel("DOM")
             DOMExtractor.getDOMElements(from: previousApp) { [weak self] elements in
                 guard let self else { return }
                 if elements.isEmpty {
                     ToastWindow.show("Open in Safari/Chrome", style: .error)
-                    if let next = self.nextEnabledMode(after: .dom) {
+                    if let next = self.nextEnabledMode(after: .dom, step: self.cycleDirection) {
                         self.switchActiveCaptureMode(to: next)
                     } else {
                         self.cancelCapture()
@@ -557,7 +563,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         case .svg:
             overlay.switchToSVGMode()
-            updateStatusLabel("SVG")
             SVGExtractor.getSVGBoundingBoxes(from: previousApp) { [weak self] boxes in
                 self?.overlay.setSVGBoxes(boxes)
             }
@@ -566,7 +571,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             overlay.switchToSPXMode { [weak self] label in
                 self?.handleSPXSizePicked(label)
             }
-            updateStatusLabel("SPX")
         }
     }
 
@@ -595,9 +599,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         #if !MAS_BUILD
         case .svg:
-            updateStatusLabel("SVG")
             overlay.showForSVG(screenImages: screenImagesForOverlay, onCancel: { [weak self] in
-                self?.updateStatusLabel(nil)
                 self?.cancelCapture()
             })
             SVGExtractor.getSVGBoundingBoxes(from: previousApp) { [weak self] boxes in
@@ -606,28 +608,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #endif
 
         case .hex:
-            updateStatusLabel("HEX")
             overlay.showForHEX(screenImages: screenImagesForOverlay, onColorPicked: { [weak self] hex in
                 self?.handleColorPicked(hex)
             }, onCancel: { [weak self] in
-                self?.updateStatusLabel(nil)
                 self?.cancelCapture()
             })
 
         #if !MAS_BUILD
         case .dom:
-            updateStatusLabel("DOM")
             overlay.showForDOM(screenImages: screenImagesForOverlay, onElementPicked: { [weak self] label in
                 self?.handleDOMElementPicked(label)
             }, onCancel: { [weak self] in
-                self?.updateStatusLabel(nil)
                 self?.cancelCapture()
             })
             DOMExtractor.getDOMElements(from: previousApp) { [weak self] elements in
                 guard let self else { return }
                 if elements.isEmpty {
                     ToastWindow.show("Open in Safari/Chrome", style: .error)
-                    if let next = self.nextEnabledMode(after: .dom) {
+                    if let next = self.nextEnabledMode(after: .dom, step: self.cycleDirection) {
                         self.switchActiveCaptureMode(to: next)
                     } else {
                         self.cancelCapture()
@@ -640,11 +638,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #endif
 
         case .spx:
-            updateStatusLabel("SPX")
             overlay.showForSPX(screenImages: screenImagesForOverlay, onSizePicked: { [weak self] label in
                 self?.handleSPXSizePicked(label)
             }, onCancel: { [weak self] in
-                self?.updateStatusLabel(nil)
                 self?.cancelCapture()
             })
         }
@@ -665,7 +661,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handleColorPicked(_ hex: String) {
         isCapturing = false
         syncStateHotkeys()
-        updateStatusLabel(nil)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(hex, forType: .string)
         ToastWindow.show(hex)
@@ -676,7 +671,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handleDOMElementPicked(_ label: String) {
         isCapturing = false
         syncStateHotkeys()
-        updateStatusLabel(nil)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(label, forType: .string)
         ToastWindow.show(label)
@@ -687,7 +681,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handleSPXSizePicked(_ label: String) {
         isCapturing = false
         syncStateHotkeys()
-        updateStatusLabel(nil)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(label, forType: .string)
         ToastWindow.show(label)
@@ -786,7 +779,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: Focus
 
     private func smartReturnFocus() {
-        updateStatusLabel(nil)
         modePopover.hide()
         if NSApp.isActive { previousApp?.activate() }
         previousApp = nil
@@ -829,6 +821,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 extension AppDelegate: ModePopoverDelegate {
     func modePopover(_ popover: ModePopover, didSelectMode mode: CaptureMode) {
         LastModeStore.save(mode)
+        cycleDirection = 1
         // Popover opened straight from the menu bar with nothing running:
         // picking a mode starts the session in it.
         guard isCapturing else {

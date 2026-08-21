@@ -127,11 +127,20 @@ final class ModePopover {
 
         var originX = buttonFrame.midX - size.width / 2
         originX = max(visible.minX + 8, min(originX, visible.maxX - size.width - 8))
-        let originY = buttonFrame.minY - Self.anchorGap - size.height
+        // Full-screen apps hide the menu bar, and the status item's window sits
+        // up there whether it's drawn or not — without the clamp the picker
+        // hangs off the top edge of the screen.
+        var originY = buttonFrame.minY - Self.anchorGap - size.height
+        originY = min(originY, visible.maxY - Self.anchorGap - size.height)
 
-        let frame = NSRect(x: originX, y: originY, width: size.width, height: size.height)
+        var frame = NSRect(x: originX, y: originY, width: size.width, height: size.height)
+        // Already on screen: stay put. The status item shifts whenever the menu
+        // bar's contents change, and re-anchoring on every mode switch made the
+        // picker hop across the screen while the user was just pressing Tab.
+        // The arrow still re-aims at the icon from the frozen position.
+        if isVisible && panel.isVisible { frame.origin = panel.frame.origin }
         content.frame = NSRect(origin: .zero, size: size)
-        content.arrowCenterX = min(max(buttonFrame.midX - originX,
+        content.arrowCenterX = min(max(buttonFrame.midX - frame.origin.x,
                                        Self.cornerRadius + Self.arrowHalfWidth),
                                    size.width - Self.cornerRadius - Self.arrowHalfWidth)
         content.needsDisplay = true
