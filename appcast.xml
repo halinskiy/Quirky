@@ -4,6 +4,24 @@
         <title>Quirky Updates</title>
         <language>en</language>
     <item>
+      <title>Version 1.1.1</title>
+      <sparkle:version>7</sparkle:version>
+      <sparkle:shortVersionString>1.1.1</sparkle:shortVersionString>
+      <pubDate>Fri, 21 Aug 2026 09:40:00 +0000</pubDate>
+      <description><![CDATA[
+        <h2>Quirky v1.1.1</h2>
+        <ul>
+          <li>Switching to OCR or SVG mid-session now works: the selection used to be swallowed and the clipboard left untouched</li>
+          <li>Shift+Tab cycles modes backward; Tab drops the picker so you can see where you landed</li>
+        </ul>
+      ]]></description>
+      <enclosure
+        url="https://github.com/halinskiy/Quirky/releases/download/v1.1.1/Quirky-1.1.1.zip"
+        sparkle:edSignature="0NkNKhnvj6eSruwmuum5J75oanrfPqvs4nNnXY17cyxwlZW5IKPJCIepkotBTCWVfaaZUi6hAuZQp36wNMeyDw==" length="1682546"
+        type="application/octet-stream" />
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+    </item>
+    <item>
       <title>Version 1.1.0</title>
       <!-- sparkle:version is the build number: Sparkle compares it against the
            installed CFBundleVersion, and shipped builds carry 5 there. -->
