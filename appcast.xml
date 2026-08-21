@@ -4,6 +4,24 @@
         <title>Quirky Updates</title>
         <language>en</language>
     <item>
+      <title>Version 1.1.2</title>
+      <sparkle:version>8</sparkle:version>
+      <sparkle:shortVersionString>1.1.2</sparkle:shortVersionString>
+      <pubDate>Fri, 21 Aug 2026 10:00:00 +0000</pubDate>
+      <description><![CDATA[
+        <h2>Quirky v1.1.2</h2>
+        <ul>
+          <li>The mode picker no longer hops around the menu bar when you switch modes</li>
+          <li>Shift+Tab can now move past DOM when no browser is in front, instead of being bounced back</li>
+        </ul>
+      ]]></description>
+      <enclosure
+        url="https://github.com/halinskiy/Quirky/releases/download/v1.1.2/Quirky-1.1.2.zip"
+        sparkle:edSignature="VjYPWll2nk0z6JpN1ZOn4Tl17m3h56AZ3Gsn23PXMhgOziDgbBTYWFSQzzcPAFIqGIQjuMVKsU1Vi5sPnooWBA==" length="1680099"
+        type="application/octet-stream" />
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+    </item>
+    <item>
       <title>Version 1.1.1</title>
       <sparkle:version>7</sparkle:version>
       <sparkle:shortVersionString>1.1.1</sparkle:shortVersionString>
