@@ -1,9 +1,29 @@
 import Cocoa
 import Vision
 
-struct DOMElementBox {
+struct DOMElementBox: Equatable {
     let rect: CGRect    // view-local coords
     let label: String
+}
+
+// MARK: - Highlight Color Storage
+
+/// The user's highlight color, parsed once and cached. The overlay used to
+/// read the UserDefaults key and re-parse the hex string on every frame of a
+/// 20 Hz redraw; the only writer is the settings menu, so a cached value is
+/// always current.
+enum HighlightColorStore {
+    private static let key = "highlightColorHex"
+    static let defaultHex = "FFD60A"
+    private(set) static var hex: String = UserDefaults.standard.string(forKey: HighlightColorStore.key)
+        ?? HighlightColorStore.defaultHex
+    private(set) static var color: NSColor = NSColor(hex: HighlightColorStore.hex)
+
+    static func set(_ newHex: String) {
+        hex = newHex
+        color = NSColor(hex: newHex)
+        UserDefaults.standard.set(newHex, forKey: key)
+    }
 }
 
 // MARK: - Selection View
@@ -19,10 +39,12 @@ final class SelectionView: NSView {
     /// hearing input while the user is clearly still moving the mouse is a
     /// dead overlay covering their screen.
     var onActivity: (() -> Void)?
-    var isSVGMode = false
-    var isHEXMode = false
-    var isDOMMode = false
-    var isSPXMode = false
+    // Each mode flag re-evaluates the dash timer: a mode with no dashed
+    // outline (HEX, SPX) must never keep it running.
+    var isSVGMode = false { didSet { syncDashTimer() } }
+    var isHEXMode = false { didSet { syncDashTimer() } }
+    var isDOMMode = false { didSet { syncDashTimer() } }
+    var isSPXMode = false { didSet { syncDashTimer() } }
     var backgroundImage: CGImage? {
         didSet {
             if let img = backgroundImage, isSPXMode {
@@ -39,7 +61,17 @@ final class SelectionView: NSView {
     private var isMoving = false
     private var lastDragPoint: NSPoint = .zero
     private var dashPhase: CGFloat = 0
-    private var timer: Timer?
+    // Marching-dash animation. The only thing on the overlay that moves
+    // between input events is the dashed outline around a hovered or
+    // selected box (OCR / SVG / DOM), so the timer exists only while one is
+    // on screen, invalidates just that outline, and gives up after
+    // `dashIdleLimit` without input. It used to run unconditionally at 20 Hz
+    // from the moment the view hit a window, repainting the full-screen
+    // screenshot on every tick — in HEX, in SPX, in ghost mode for hours.
+    private var dashTimer: Timer?
+    private var dashLastInput = Date()
+    private static let dashInterval: TimeInterval = 0.05
+    private static let dashIdleLimit: TimeInterval = 30
     private var hoveredBox: CGRect? = nil
 
     // HEX mode state
@@ -72,6 +104,10 @@ final class SelectionView: NSView {
     private var spxSnapAnimFrom: NSRect = .zero
     private var spxSnapAnimTo: NSRect = .zero
     private var spxSnapAnimStart: Date = .distantPast
+    /// Commit that runs when the snap-on-release animation lands. Kept
+    /// separately so an animation that gets cut short can still commit its
+    /// rect instead of losing the measurement.
+    private var spxSnapAnimCompletion: (() -> Void)?
     private let spxSnapAnimDuration: TimeInterval = 0.18
     var spxIsGhost: Bool = false                  // OverlayWindow flips this via setSPXGhost
 
@@ -140,10 +176,7 @@ final class SelectionView: NSView {
     }
     /// All committed SPX segments use the user's highlight color so the
     /// markings have a single visual identity. Falls back to yellow.
-    fileprivate var spxSegmentColor: NSColor {
-        let hex = UserDefaults.standard.string(forKey: "highlightColorHex") ?? "FFD60A"
-        return NSColor(hex: hex)
-    }
+    fileprivate var spxSegmentColor: NSColor { HighlightColorStore.color }
 
     var screenWordBoxes: [CGRect] = []
     var screenSVGBoxes: [CGRect] = []
@@ -416,19 +449,110 @@ final class SelectionView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window != nil {
-            let t = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
-                self?.dashPhase -= 2.0
-                self?.needsDisplay = true
-            }
-            // .common includes .eventTracking — otherwise the timer freezes
-            // during mouse drags and AppKit's shielding-window tracking loops.
-            RunLoop.current.add(t, forMode: .common)
-            timer = t
-        } else {
-            timer?.invalidate()
-            timer = nil
+        if window == nil { stopDashTimer() } else { syncDashTimer() }
+    }
+
+    deinit { teardown() }
+
+    /// Releases everything that could outlive the window. Run-loop timers
+    /// are retained by the run loop, not by the view, so an orphaned one
+    /// keeps the process waking after the view is gone; the full-screen
+    /// screenshot and the SPX analyzer are tens of MB per display and a copy
+    /// of the user's screen. OverlayWindow calls this before it drops a
+    /// window, deinit calls it again as a backstop. Idempotent.
+    func teardown() {
+        stopDashTimer()
+        spxCloseTimer?.invalidate()
+        spxCloseTimer = nil
+        spxSnapAnimTimer?.invalidate()
+        spxSnapAnimTimer = nil
+        spxSnapAnimCompletion = nil
+        spxIsSnapAnimating = false
+        spxAnalyzer = nil
+        backgroundImage = nil
+        screenWordBoxes = []
+        screenSVGBoxes = []
+        screenDOMElements = []
+        hoveredBox = nil
+        hoveredDOMElement = nil
+        onComplete = nil
+        onCancel = nil
+        onColorPicked = nil
+        onDOMElementPicked = nil
+        onSPXSizePicked = nil
+        onSPXHide = nil
+        onActivity = nil
+    }
+
+    // MARK: Dash animation
+
+    /// Rects whose dashed outline is animating right now: nothing in HEX and
+    /// SPX (solid strokes only), the hovered element in DOM, the hovered box
+    /// and the boxes caught by a live drag in OCR / SVG. Mirrors what
+    /// `draw(_:)` strokes with `dashPhase`.
+    private var dashAnimatedRects: [NSRect] {
+        if isHEXMode || isSPXMode { return [] }
+        if isDOMMode { return hoveredDOMElement.map { [$0.rect] } ?? [] }
+        var rects: [NSRect] = []
+        if !isSelecting || !isDragging, let box = hoveredBox { rects.append(box) }
+        if isDragging, selectionRect.width > 0, selectionRect.height > 0 {
+            rects.append(contentsOf: activeBoxes.filter { box in
+                selectionRect.contains(NSPoint(x: box.midX, y: box.midY))
+            })
         }
+        return rects
+    }
+
+    /// Starts the dash timer when something dashed is on screen and stops it
+    /// otherwise. Every input path that can change that calls it, so the
+    /// timer never runs over a static frame (HEX, SPX, ghost, idle OCR).
+    private func syncDashTimer() {
+        guard window != nil, !dashAnimatedRects.isEmpty else { stopDashTimer(); return }
+        dashLastInput = Date()
+        if dashTimer == nil { startDashTimer() }
+    }
+
+    private func startDashTimer() {
+        let t = Timer(timeInterval: SelectionView.dashInterval, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            self.dashTick()
+        }
+        // .common includes .eventTracking — otherwise the timer freezes
+        // during mouse drags and AppKit's shielding-window tracking loops.
+        RunLoop.main.add(t, forMode: .common)
+        dashTimer = t
+    }
+
+    private func stopDashTimer() {
+        dashTimer?.invalidate()
+        dashTimer = nil
+    }
+
+    /// One frame of the marching dash. Invalidates only the dashed outlines,
+    /// so the full-screen backdrop isn't recomposited 20 times a second, and
+    /// stops after `dashIdleLimit` without input: a cursor parked on a word
+    /// for half a minute doesn't need the animation, and the next mouse
+    /// move restarts it.
+    private func dashTick() {
+        let rects = dashAnimatedRects
+        guard window != nil, !rects.isEmpty,
+              Date().timeIntervalSince(dashLastInput) < SelectionView.dashIdleLimit else {
+            stopDashTimer()
+            return
+        }
+        dashPhase -= 2.0
+        let region = rects.dropFirst().reduce(rects[0]) { $0.union($1) }
+        setNeedsDisplay(region.insetBy(dx: -8, dy: -8))
+    }
+
+    /// Changes the hovered OCR / SVG box, repainting only the old and new
+    /// outlines. Mouse movement inside the same box (or over nothing) no
+    /// longer repaints the whole screen.
+    private func setHoveredBox(_ box: CGRect?) {
+        guard box != hoveredBox else { return }
+        if let old = hoveredBox { setNeedsDisplay(old.insetBy(dx: -8, dy: -8)) }
+        hoveredBox = box
+        if let new = box { setNeedsDisplay(new.insetBy(dx: -8, dy: -8)) }
     }
 
     override func updateTrackingAreas() {
@@ -457,8 +581,12 @@ final class SelectionView: NSView {
         }
         if isDOMMode {
             domPoint = point
-            hoveredDOMElement = pickDeepestDOMElement(at: point)
-            needsDisplay = true
+            let element = pickDeepestDOMElement(at: point)
+            if element != hoveredDOMElement {
+                hoveredDOMElement = element
+                needsDisplay = true
+            }
+            syncDashTimer()
             return
         }
         if isSPXMode {
@@ -477,8 +605,8 @@ final class SelectionView: NSView {
             return
         }
         guard !isSelecting else { return }
-        hoveredBox = activeBoxes.first(where: { $0.contains(point) })
-        needsDisplay = true
+        setHoveredBox(activeBoxes.first(where: { $0.contains(point) }))
+        syncDashTimer()
     }
 
     override func flagsChanged(with event: NSEvent) {
@@ -557,8 +685,12 @@ final class SelectionView: NSView {
         }
         if isDOMMode {
             domPoint = current
-            hoveredDOMElement = pickDeepestDOMElement(at: current)
-            needsDisplay = true
+            let element = pickDeepestDOMElement(at: current)
+            if element != hoveredDOMElement {
+                hoveredDOMElement = element
+                needsDisplay = true
+            }
+            syncDashTimer()
             return
         }
         if isSPXMode {
@@ -600,7 +732,7 @@ final class SelectionView: NSView {
         if !isDragging {
             if hypot(current.x - startPoint.x, current.y - startPoint.y) > 3 {
                 isDragging = true
-                hoveredBox = nil
+                setHoveredBox(nil)
             } else { return }
         }
         let spacePressed = spaceDown
@@ -621,6 +753,7 @@ final class SelectionView: NSView {
             )
         }
         needsDisplay = true
+        syncDashTimer()
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -777,8 +910,7 @@ final class SelectionView: NSView {
             return
         }
 
-        let hex = UserDefaults.standard.string(forKey: "highlightColorHex") ?? "FFD60A"
-        let highlightColor = NSColor(hex: hex)
+        let highlightColor = HighlightColorStore.color
         let dashPattern: [CGFloat] = [4.0, 4.0]
         let cornerRadius: CGFloat = 4
 
@@ -922,8 +1054,7 @@ final class SelectionView: NSView {
         guard let el = hoveredDOMElement else { return }
 
         // Highlight rectangle — same yellow dashed style as OCR mode
-        let hex = UserDefaults.standard.string(forKey: "highlightColorHex") ?? "FFD60A"
-        let highlightColor = NSColor(hex: hex)
+        let highlightColor = HighlightColorStore.color
         let dashPattern: [CGFloat] = [4.0, 4.0]
         let cornerRadius: CGFloat = 4
 
@@ -1017,6 +1148,7 @@ final class SelectionView: NSView {
         spxActiveHandle = nil
         spxSnapAnimTimer?.invalidate()
         spxSnapAnimTimer = nil
+        spxSnapAnimCompletion = nil
         spxIsSnapAnimating = false
         spxLiveDragRect = .zero
         spxHoverSegIndex = nil
@@ -1052,7 +1184,9 @@ final class SelectionView: NSView {
     }
 
     private func viewToImagePixel(_ p: NSPoint) -> (Int, Int)? {
-        guard let image = backgroundImage else { return nil }
+        // A degenerate view would divide by zero below and `Int(nan)` traps.
+        guard let image = backgroundImage, bounds.width > 0, bounds.height > 0,
+              p.x.isFinite, p.y.isFinite else { return nil }
         let sx = CGFloat(image.width) / bounds.width
         let sy = CGFloat(image.height) / bounds.height
         let px = Int(p.x * sx)
@@ -1266,11 +1400,13 @@ final class SelectionView: NSView {
     /// ease-out cubic, then invokes `completion` on the main thread. Cancels
     /// any in-flight snap animation.
     private func animateSPXSnap(from: NSRect, to: NSRect, completion: @escaping () -> Void) {
-        spxSnapAnimTimer?.invalidate()
-        spxSnapAnimTimer = nil
+        // A snap still in flight lands first, so its rect is committed
+        // rather than dropped on the floor.
+        finishSnapAnimation()
         spxSnapAnimFrom = from
         spxSnapAnimTo = to
         spxSnapAnimStart = Date()
+        spxSnapAnimCompletion = completion
         spxIsSnapAnimating = true
         let duration = spxSnapAnimDuration
         let t = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] timer in
@@ -1287,15 +1423,26 @@ final class SelectionView: NSView {
                 height: f.height + (g.height - f.height) * CGFloat(eased)
             )
             self.needsDisplay = true
-            if p >= 1.0 {
-                timer.invalidate()
-                self.spxSnapAnimTimer = nil
-                self.spxIsSnapAnimating = false
-                completion()
-            }
+            if p >= 1.0 { self.finishSnapAnimation() }
         }
         spxSnapAnimTimer = t
         RunLoop.current.add(t, forMode: .common)
+    }
+
+    /// Ends the snap-on-release animation: stops its timer, jumps to the
+    /// target rect and runs the pending commit. Both the animation's own
+    /// last frame and anything that interrupts it (a segment animation on
+    /// the shared timer) come through here, so `spxIsSnapAnimating` can't
+    /// stay stuck and a commit can't be lost. Safe to call when idle.
+    private func finishSnapAnimation() {
+        spxSnapAnimTimer?.invalidate()
+        spxSnapAnimTimer = nil
+        guard spxIsSnapAnimating else { return }
+        spxIsSnapAnimating = false
+        spxLiveDragRect = spxSnapAnimTo
+        let commit = spxSnapAnimCompletion
+        spxSnapAnimCompletion = nil
+        commit?()
     }
 
     /// Re-shrink a committed rect segment to its enclosed content. Animates
@@ -1318,8 +1465,7 @@ final class SelectionView: NSView {
 
     /// Lerps a rect-typed segment in place (used by magnetize-on-double-click).
     private func animateSegmentRect(at index: Int, from: NSRect, to: NSRect) {
-        spxSnapAnimTimer?.invalidate()
-        spxSnapAnimTimer = nil
+        finishSnapAnimation()
         let start = Date()
         let duration = spxSnapAnimDuration
         let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] t in
@@ -1735,31 +1881,36 @@ final class SelectionView: NSView {
     // MARK: Color helpers
 
     private func sampleColor(at viewPoint: NSPoint) -> NSColor? {
-        guard let image = backgroundImage else { return nil }
-        let scaleX = CGFloat(image.width) / bounds.width
-        let scaleY = CGFloat(image.height) / bounds.height
-        let px = Int(viewPoint.x * scaleX)
-        let py = Int((bounds.height - viewPoint.y) * scaleY) // NSView Y-flip → CGImage top-left
-        guard px >= 0, py >= 0, px < image.width, py < image.height else { return nil }
+        // Crop the one pixel out first (a cheap view onto the same backing
+        // store) instead of drawing the whole 5K frame translated into a 1×1
+        // context on every mouse move.
+        guard let image = backgroundImage,
+              let (px, py) = viewToImagePixel(viewPoint),   // NSView Y-flip → CGImage top-left
+              let pixelImage = image.cropping(to: CGRect(x: px, y: py, width: 1, height: 1)) else { return nil }
 
-        var pixel = [UInt8](repeating: 0, count: 4)
-        guard let ctx = CGContext(
-            data: &pixel, width: 1, height: 1,
-            bitsPerComponent: 8, bytesPerRow: 4,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.noneSkipLast.rawValue
-        ) else { return nil }
-        ctx.translateBy(x: -CGFloat(px), y: -(CGFloat(image.height) - CGFloat(py) - 1))
-        ctx.draw(image, in: CGRect(x: 0, y: 0, width: CGFloat(image.width), height: CGFloat(image.height)))
+        var pixel: [UInt8] = [0, 0, 0, 0]
+        let drawn = pixel.withUnsafeMutableBytes { buffer -> Bool in
+            guard let base = buffer.baseAddress, let ctx = CGContext(
+                data: base, width: 1, height: 1,
+                bitsPerComponent: 8, bytesPerRow: 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.noneSkipLast.rawValue
+            ) else { return false }
+            ctx.draw(pixelImage, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+            return true
+        }
+        guard drawn else { return nil }
         return NSColor(srgbRed: CGFloat(pixel[0]) / 255, green: CGFloat(pixel[1]) / 255, blue: CGFloat(pixel[2]) / 255, alpha: 1)
     }
 
     private func hexString(for color: NSColor?) -> String {
         guard let c = color?.usingColorSpace(.sRGB) else { return "#000000" }
+        // Round, don't truncate: n/255*255 lands a hair under n in floating
+        // point, and truncation turned #C8 into #C7.
         return String(format: "#%02X%02X%02X",
-                      Int(c.redComponent * 255),
-                      Int(c.greenComponent * 255),
-                      Int(c.blueComponent * 255))
+                      Int((c.redComponent * 255).rounded()),
+                      Int((c.greenComponent * 255).rounded()),
+                      Int((c.blueComponent * 255).rounded()))
     }
 
     private func colorName(for color: NSColor) -> String {
@@ -1849,6 +2000,15 @@ private final class KeyWindow: NSWindow {
 
 final class OverlayWindow {
     private var windows: [NSWindow] = []
+    /// Bumped every time the window set is created or torn down. Delayed
+    /// work that was scheduled against one set of windows (the ghost
+    /// re-shoot, the OCR pre-scan) checks it before touching `windows`.
+    private var showGeneration = 0
+    /// In-flight OCR pre-scans, so a mode switch can cancel the previous
+    /// scan instead of stacking a full-screen Vision request per display on
+    /// every Tab press.
+    private var wordScanRequests: [VNRequest] = []
+    private var wordScanGeneration = 0
     /// Rect selections (OCR / SVG) land here. This is a property set once by
     /// AppDelegate, not a per-show parameter, because the mode a session
     /// STARTS in is not the mode it ENDS in: HEX / DOM / SPX used to install a
@@ -2054,16 +2214,27 @@ final class OverlayWindow {
                            completion: @escaping () -> Void) {
         guard !windows.isEmpty else { completion(); return }
         // Resolve each window's display before hiding it: a window that isn't
-        // on screen reports no `screen`.
-        let displayIDs = windows.map { displayID(for: $0) }
+        // on screen reports no `screen`. Keyed by window identity rather than
+        // array position, because the array can change under the delay.
+        var displayByWindow: [ObjectIdentifier: CGDirectDisplayID] = [:]
+        for window in windows {
+            if let id = displayID(for: window) { displayByWindow[ObjectIdentifier(window)] = id }
+        }
+        let generation = showGeneration
         for window in windows { window.orderOut(nil) }
         // One beat for the compositor to drop our windows before re-shooting.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { [weak self] in
-            guard let self else { completion(); return }
-            let imageByDisplay = Dictionary(uniqueKeysWithValues: capture().map { ($0.displayID, $0.image) })
-            for (i, window) in self.windows.enumerated() {
+            // The session ended (Esc, watchdog) or a new one replaced these
+            // windows during the beat: nothing to refresh, and running
+            // `capture()` would re-shoot the screen into memory after the
+            // session already let it go, while `completion()` would hand
+            // focus back to an overlay the user just left.
+            guard let self, self.showGeneration == generation, !self.windows.isEmpty else { return }
+            let imageByDisplay = Dictionary(capture().map { ($0.displayID, $0.image) },
+                                            uniquingKeysWith: { first, _ in first })
+            for window in self.windows {
                 if let view = window.contentView as? SelectionView,
-                   let id = displayIDs[i],
+                   let id = displayByWindow[ObjectIdentifier(window)],
                    let image = imageByDisplay[id] {
                     view.backgroundImage = image   // rebuilds the SPX analyzer
                     view.needsDisplay = true
@@ -2085,10 +2256,35 @@ final class OverlayWindow {
             spxPreservedSegments = view.spxCommitted
         }
         isGhost = false
-        for window in windows { window.orderOut(nil) }
+        tearDownWindows()
         NSCursor.arrow.set()
-        windows.removeAll()
         onSPXPreserveHide?()
+    }
+
+    /// The one way windows leave the screen for good. Each view's timers are
+    /// stopped and its full-screen image dropped explicitly rather than
+    /// trusting deallocation: AppKit makes no promise about when (or
+    /// whether) a window that was just ordered out goes away, and a
+    /// run-loop timer survives its view regardless. Before this, every
+    /// capture could leave one 20 Hz timer per display ticking forever.
+    private func tearDownWindows() {
+        showGeneration &+= 1
+        cancelWordScans()
+        let doomed = windows
+        windows.removeAll()
+        for window in doomed {
+            (window.contentView as? SelectionView)?.teardown()
+            window.orderOut(nil)
+            // `isReleasedWhenClosed` is false, so this is the plain "done
+            // with it" call: off screen, out of the window list, no release.
+            window.close()
+        }
+    }
+
+    private func cancelWordScans() {
+        for request in wordScanRequests { request.cancel() }
+        wordScanRequests.removeAll()
+        wordScanGeneration &+= 1
     }
 
     /// Restore preserved SPX segments into a freshly-shown view. No-op when no
@@ -2121,13 +2317,21 @@ final class OverlayWindow {
     }
 
     func preScanWordBoxes(level: VNRequestTextRecognitionLevel, screenImages: [(displayID: CGDirectDisplayID, image: CGImage)]) {
-        let imageByDisplay = Dictionary(uniqueKeysWithValues: screenImages.map { ($0.displayID, $0.image) })
+        // A new scan supersedes the previous one: cancel what is still
+        // running and tag the results, so a slow old scan can neither pile
+        // up behind the new one nor overwrite its boxes when it finally
+        // answers.
+        cancelWordScans()
+        let generation = wordScanGeneration
+        let imageByDisplay = Dictionary(screenImages.map { ($0.displayID, $0.image) },
+                                        uniquingKeysWith: { first, _ in first })
         for window in windows {
             guard let view = window.contentView as? SelectionView,
                   let screen = window.screen,
                   let displayID = screen.deviceDescription[NSDeviceDescriptionKey(rawValue: "NSScreenNumber")] as? CGDirectDisplayID,
                   let image = imageByDisplay[displayID] else { continue }
-            let request = VNRecognizeTextRequest { [weak view] request, _ in
+            let screenSize = screen.frame.size
+            let request = VNRecognizeTextRequest { [weak self, weak view] request, _ in
                 guard let results = request.results as? [VNRecognizedTextObservation], !results.isEmpty else { return }
                 var wordBoxes: [CGRect] = []
                 for obs in results {
@@ -2140,17 +2344,22 @@ final class OverlayWindow {
                         searchStart = wordRange.upperBound
                         if let bb = try? candidate.boundingBox(for: wordRange) {
                             wordBoxes.append(CGRect(
-                                x: bb.boundingBox.minX * screen.frame.width,
-                                y: bb.boundingBox.minY * screen.frame.height,
-                                width: bb.boundingBox.width * screen.frame.width,
-                                height: bb.boundingBox.height * screen.frame.height
+                                x: bb.boundingBox.minX * screenSize.width,
+                                y: bb.boundingBox.minY * screenSize.height,
+                                width: bb.boundingBox.width * screenSize.width,
+                                height: bb.boundingBox.height * screenSize.height
                             ).insetBy(dx: -6, dy: -4))
                         }
                     }
                 }
-                DispatchQueue.main.async { view?.screenWordBoxes = wordBoxes; view?.needsDisplay = true }
+                DispatchQueue.main.async {
+                    guard let self, self.wordScanGeneration == generation, let view else { return }
+                    view.screenWordBoxes = wordBoxes
+                    view.needsDisplay = true
+                }
             }
             request.recognitionLevel = level
+            wordScanRequests.append(request)
             DispatchQueue.global(qos: .userInitiated).async {
                 try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
             }
@@ -2160,8 +2369,8 @@ final class OverlayWindow {
     func setSVGBoxes(_ cgBoxes: [CGRect]) {
         let mainH = CGDisplayBounds(CGMainDisplayID()).height
         for window in windows {
-            guard let view = window.contentView as? SelectionView else { continue }
-            let screen = window.screen ?? NSScreen.main!
+            guard let view = window.contentView as? SelectionView,
+                  let screen = window.screen ?? NSScreen.main else { continue }
             view.screenSVGBoxes = cgBoxes.map { cg in
                 CGRect(
                     x: cg.origin.x - screen.frame.origin.x,
@@ -2177,8 +2386,8 @@ final class OverlayWindow {
     func setDOMElements(_ elements: [DOMExtractor.Element]) {
         let mainH = CGDisplayBounds(CGMainDisplayID()).height
         for window in windows {
-            guard let view = window.contentView as? SelectionView else { continue }
-            let screen = window.screen ?? NSScreen.main!
+            guard let view = window.contentView as? SelectionView,
+                  let screen = window.screen ?? NSScreen.main else { continue }
             view.screenDOMElements = elements.map { el in
                 let viewRect = CGRect(
                     x: el.rect.origin.x - screen.frame.origin.x,
@@ -2194,9 +2403,8 @@ final class OverlayWindow {
 
     func dismiss() {
         isGhost = false
-        for window in windows { window.orderOut(nil) }
+        tearDownWindows()
         NSCursor.arrow.set()
-        windows.removeAll()
         // Explicit dismiss (Esc, final pick, mode switch) wipes preserved SPX
         // state — only click-hide via hidePreservingSPX preserves it.
         spxPreservedSegments.removeAll()
@@ -2211,11 +2419,16 @@ final class OverlayWindow {
         // (state desync, a path that skipped dismiss), showing another set on
         // top would bury them: invisible, unreachable, still swallowing the
         // screen. Tear down whatever is there first.
-        for window in windows { window.orderOut(nil) }
-        windows.removeAll()
+        tearDownWindows()
         self.cancellation = onCancel
-        let imageByDisplay = Dictionary(uniqueKeysWithValues: screenImages.map { ($0.displayID, $0.image) })
+        let imageByDisplay = Dictionary(screenImages.map { ($0.displayID, $0.image) },
+                                        uniquingKeysWith: { first, _ in first })
         for screen in NSScreen.screens {
+            // No screenshot for this display means a black opaque window
+            // over it — every pixel gone until Esc. Leave that display alone;
+            // the caller treats an overlay with no windows as a failed start.
+            guard let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
+                  let image = imageByDisplay[displayID] else { continue }
             let window = KeyWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
             window.level = .init(Int(CGShieldingWindowLevel()))
             window.isOpaque = false                     // allow per-pixel alpha (needed for SPX ghost mode)
@@ -2227,9 +2440,7 @@ final class OverlayWindow {
             window.isReleasedWhenClosed = false
             let view = SelectionView(frame: screen.frame)
             view.isSVGMode = isSVG
-            if let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID {
-                view.backgroundImage = imageByDisplay[displayID]
-            }
+            view.backgroundImage = image
             view.onComplete = { [weak self] cgRect in
                 guard let self else { return }
                 self.dismiss()
@@ -2243,6 +2454,7 @@ final class OverlayWindow {
             view.discardCursorRects()
             view.resetCursorRects()
         }
+        guard !windows.isEmpty else { return }
         NSApp.activate(ignoringOtherApps: true)
         windows.first?.makeFirstResponder(windows.first?.contentView)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { NSCursor.crosshair.set() }
