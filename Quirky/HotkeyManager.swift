@@ -45,14 +45,20 @@ final class HotkeyManager {
 
     // MARK: Public registration
 
-    /// Always-on ⌘⇧1 — call once at app launch.
-    func registerCaptureHotkey() {
-        guard captureRef == nil else { return }
-        captureRef = register(
-            id: .capture,
-            keyCode: UInt32(kVK_ANSI_1),
-            modifiers: UInt32(cmdKey | shiftKey)
-        )
+    /// Always-on ⌘⇧1 — call at app launch. Returns whether the hotkey is
+    /// registered; another app holding the combination makes Carbon refuse
+    /// it, and the caller should say so rather than sit there inert.
+    /// Safe to call again: a no-op once registered.
+    @discardableResult
+    func registerCaptureHotkey() -> Bool {
+        if captureRef == nil {
+            captureRef = register(
+                id: .capture,
+                keyCode: UInt32(kVK_ANSI_1),
+                modifiers: UInt32(cmdKey | shiftKey)
+            )
+        }
+        return captureRef != nil
     }
 
     /// Tab cycles modes forward during capture, ⇧Tab backward; only register
@@ -121,7 +127,7 @@ final class HotkeyManager {
             eventKind: OSType(kEventHotKeyPressed)
         )
         let userData = Unmanaged.passUnretained(self).toOpaque()
-        InstallEventHandler(
+        let status = InstallEventHandler(
             GetApplicationEventTarget(),
             { _, eventRef, ctx -> OSStatus in
                 guard let eventRef = eventRef, let ctx = ctx else { return noErr }
@@ -154,5 +160,8 @@ final class HotkeyManager {
             userData,
             &handlerRef
         )
+        if status != noErr {
+            NSLog("Quirky: InstallEventHandler failed with status \(status) — hotkeys will not fire")
+        }
     }
 }

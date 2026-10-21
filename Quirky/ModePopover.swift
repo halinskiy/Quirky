@@ -117,7 +117,12 @@ final class ModePopover {
         self.statusButton = button   // `statusButton` here is the parameter
         // Deferred: AppKit clears the button's highlight when it finishes
         // handling the click that got us here, so setting it inline is a no-op.
-        DispatchQueue.main.async { button.highlight(true) }
+        // If the picker was hidden again before this runs, lighting the icon
+        // now would leave it stuck lit until the next show.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.isVisible, self.statusButton === button else { return }
+            button.highlight(true)
+        }
         content.configure(enabled: enabled, current: current)
 
         let size = content.preferredSize(for: enabled.count)

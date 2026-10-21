@@ -43,7 +43,10 @@ final class ToastWindow: NSWindow {
         let width = textBounds.width + hPad * 2
         let height = textBounds.height + vPad * 2
 
-        guard let screen = NSScreen.main else { return }
+        // The screen the user is working on is the one under the cursor, not
+        // necessarily the one with the key window.
+        let mouse = NSEvent.mouseLocation
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main else { return }
         let x = screen.frame.midX - width / 2
         let y = screen.frame.midY - height / 2 - screen.frame.height * 0.2
         let frame = NSRect(x: x, y: y, width: width, height: height)

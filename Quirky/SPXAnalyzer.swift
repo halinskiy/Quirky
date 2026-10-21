@@ -41,7 +41,9 @@ final class SPXAnalyzer {
     init?(image: CGImage) {
         self.width = image.width
         self.height = image.height
-        guard width > 0, height > 0 else { return nil }
+        // The gradient pass skips a one-pixel border on each side; anything
+        // narrower than three pixels has no interior to scan.
+        guard width > 2, height > 2 else { return nil }
         self.bytesPerRow = width * 4
         let totalBytes = bytesPerRow * height
         let raw = UnsafeMutableRawPointer.allocate(byteCount: totalBytes, alignment: 4)
@@ -53,7 +55,9 @@ final class SPXAnalyzer {
             bitsPerComponent: 8, bytesPerRow: bytesPerRow,
             space: space, bitmapInfo: bitmapInfo
         ) else {
-            raw.deallocate()
+            // Every stored property is initialised by this point, so a nil
+            // return runs `deinit`, and deinit frees `pixels`. Freeing `raw`
+            // here as well was a double free.
             return nil
         }
         ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
