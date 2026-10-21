@@ -8,12 +8,18 @@ import Cocoa
 
 final class SVGExtractor {
 
+    /// Bounding-box requests supersede each other (see DOMExtractor); the
+    /// final extraction never does — the user asked for exactly that one.
+    private static let boxRequestSlot = BrowserScripting.RequestSlot()
+
     // MARK: - Public
 
     /// Returns bounding boxes of all visible SVGs on the page in CG coordinates (top-left origin).
-    static func getSVGBoundingBoxes(from app: NSRunningApplication?, completion: @escaping ([CGRect]) -> Void) {
-        guard let browser = detectBrowser(app) else {
-            DispatchQueue.main.async { completion([]) }
+    /// `failure` says why `boxes` is empty when it is. Completion runs on the main thread.
+    static func getSVGBoundingBoxes(from app: NSRunningApplication?,
+                                    completion: @escaping ([CGRect], BrowserScripting.Failure?) -> Void) {
+        guard let target = BrowserScripting.target(for: app) else {
+            DispatchQueue.main.async { completion([], .noBrowser) }
             return
         }
 
@@ -47,26 +53,31 @@ final class SVGExtractor {
         return JSON.stringify(R);})()
         """
 
-        let source = appleScript(browser: browser, js: js)
-
-        DispatchQueue.global(qos: .userInitiated).async {
-            let boxes = runBoxes(source)
-            DispatchQueue.main.async { completion(boxes) }
+        BrowserScripting.run(js: js, in: target, timeoutSeconds: 3, slot: SVGExtractor.boxRequestSlot) { result in
+            switch result {
+            case .failure(let failure): completion([], failure)
+            case .success(let json): completion(SVGExtractor.parseBoxes(json), nil)
+            }
         }
     }
 
-    static func extractSVGs(in screenRect: CGRect, from app: NSRunningApplication?, completion: @escaping ([String]) -> Void) {
-        guard let browser = detectBrowser(app) else {
-            DispatchQueue.main.async { completion([]) }
+    /// Extracts the SVG sources under `screenRect`. `failure` says why `svgs`
+    /// is empty when it is. Completion runs on the main thread.
+    static func extractSVGs(in screenRect: CGRect, from app: NSRunningApplication?,
+                            completion: @escaping ([String], BrowserScripting.Failure?) -> Void) {
+        guard let target = BrowserScripting.target(for: app) else {
+            DispatchQueue.main.async { completion([], .noBrowser) }
             return
         }
 
         let js = buildJavaScript(for: screenRect)
-        let source = appleScript(browser: browser, js: js)
-
-        DispatchQueue.global(qos: .userInitiated).async {
-            let svgs = run(source)
-            DispatchQueue.main.async { completion(svgs) }
+        // Longer budget than the enumerations: resolving <img src="…svg">
+        // fetches over the network.
+        BrowserScripting.run(js: js, in: target, timeoutSeconds: 10) { result in
+            switch result {
+            case .failure(let failure): completion([], failure)
+            case .success(let json): completion(SVGExtractor.parseSVGs(json), nil)
+            }
         }
     }
 
@@ -79,62 +90,6 @@ final class SVGExtractor {
         if let data = combined.data(using: .utf8) {
             pb.setData(data, forType: NSPasteboard.PasteboardType("public.svg-image"))
         }
-    }
-
-    // MARK: - Browser detection
-
-    private enum Browser {
-        case safari
-        case chromium(name: String)
-    }
-
-    private static func detectBrowser(_ app: NSRunningApplication?) -> Browser? {
-        guard let bid = app?.bundleIdentifier else { return nil }
-        let lower = bid.lowercased()
-        if lower == "com.apple.safari" {
-            ensureSafariJSEnabled()
-            return .safari
-        }
-        let chromiumIDs = [
-            "com.google.chrome",
-            "company.thebrowser.browser",
-            "com.brave.browser",
-            "com.microsoft.edgemac",
-            "com.vivaldi.vivaldi",
-            "com.operasoftware.opera",
-            "ai.perplexity.comet",
-        ]
-        for cid in chromiumIDs where lower == cid {
-            ensureJSEnabled(bundleID: bid)
-            return .chromium(name: app?.localizedName ?? "Google Chrome")
-        }
-        if lower.contains("chrome") || lower.contains("chromium") {
-            ensureJSEnabled(bundleID: bid)
-            return .chromium(name: app?.localizedName ?? "Google Chrome")
-        }
-        return nil
-    }
-
-    /// Programmatically enable "Allow JavaScript from Apple Events" for Chromium browsers.
-    private static func ensureJSEnabled(bundleID: String) {
-        let key = "AppleScriptEnabled"
-        if UserDefaults(suiteName: bundleID)?.bool(forKey: key) == true { return }
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
-        task.arguments = ["write", bundleID, key, "-bool", "true"]
-        try? task.run()
-        task.waitUntilExit()
-    }
-
-    /// Programmatically enable "Allow JavaScript from Apple Events" for Safari.
-    private static func ensureSafariJSEnabled() {
-        let key = "AllowJavaScriptFromAppleEvents"
-        if UserDefaults(suiteName: "com.apple.Safari")?.bool(forKey: key) == true { return }
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
-        task.arguments = ["write", "com.apple.Safari", key, "-bool", "true"]
-        try? task.run()
-        task.waitUntilExit()
     }
 
     // MARK: - JavaScript
@@ -183,32 +138,10 @@ final class SVGExtractor {
         """
     }
 
-    // MARK: - AppleScript
+    // MARK: - Script results
 
-    private static func appleScript(browser: Browser, js: String) -> String {
-        let escaped = js.replacingOccurrences(of: "\\", with: "\\\\")
-                        .replacingOccurrences(of: "\"", with: "\\\"")
-        switch browser {
-        case .safari:
-            return "tell application \"Safari\" to do JavaScript \"\(escaped)\" in document 1"
-        case .chromium(let name):
-            return """
-            tell application "\(name)"
-                tell active tab of front window
-                    execute javascript "\(escaped)"
-                end tell
-            end tell
-            """
-        }
-    }
-
-    private static func runBoxes(_ source: String) -> [CGRect] {
-        guard let script = NSAppleScript(source: source) else { return [] }
-        var error: NSDictionary?
-        let result = script.executeAndReturnError(&error)
-        if error != nil { return [] }
-        guard let json = result.stringValue,
-              let data = json.data(using: .utf8),
+    private static func parseBoxes(_ json: String) -> [CGRect] {
+        guard let data = json.data(using: .utf8),
               let arr = try? JSONSerialization.jsonObject(with: data) as? [[Double]] else { return [] }
         return arr.compactMap { item in
             guard item.count == 4 else { return nil }
@@ -216,16 +149,8 @@ final class SVGExtractor {
         }
     }
 
-    private static func run(_ source: String) -> [String] {
-        guard let script = NSAppleScript(source: source) else { return [] }
-        var error: NSDictionary?
-        let result = script.executeAndReturnError(&error)
-        if let error = error {
-            NSLog("SVGExtractor AppleScript error: \(error)")
-            return []
-        }
-        guard let json = result.stringValue,
-              let data = json.data(using: .utf8),
+    private static func parseSVGs(_ json: String) -> [String] {
+        guard let data = json.data(using: .utf8),
               let arr = try? JSONSerialization.jsonObject(with: data) as? [String] else { return [] }
         return arr
     }

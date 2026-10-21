@@ -13,11 +13,26 @@ final class DOMExtractor {
         let label: String   // tag.class.class — DevTools-style selector
     }
 
+    /// Enumeration requests supersede each other: once the user has moved
+    /// on to another mode, a queued request has nobody to answer to.
+    private static let requestSlot = BrowserScripting.RequestSlot()
+    /// Per-call cap on waiting for the browser's accessibility server. The
+    /// system default is several seconds — per call — and the walk below
+    /// makes many calls.
+    private static let axTimeout: Float = 0.5
+    /// Hard ceiling on the AX tree walk, so a huge or hung tree can't keep a
+    /// thread busy indefinitely.
+    private static let axNodeBudget = 400
+
     // MARK: - Public
 
-    static func getDOMElements(from app: NSRunningApplication?, completion: @escaping ([Element]) -> Void) {
-        guard let app = app, let browser = detectBrowser(app) else {
-            DispatchQueue.main.async { completion([]) }
+    /// Elements of the page in the browser in front, in CG screen coords.
+    /// `failure` says why `elements` is empty when it is. Completion runs on
+    /// the main thread.
+    static func getDOMElements(from app: NSRunningApplication?,
+                               completion: @escaping ([Element], BrowserScripting.Failure?) -> Void) {
+        guard let target = BrowserScripting.target(for: app) else {
+            DispatchQueue.main.async { completion([], .noBrowser) }
             return
         }
 
@@ -55,28 +70,36 @@ final class DOMExtractor {
         return JSON.stringify(R);})()
         """
 
-        let source = appleScript(browser: browser, js: js)
-        let contentFrame = browserContentFrame(of: app)
-
+        // The AX walk blocks for up to `axTimeout` per call when the browser
+        // is busy. It used to run inline on the main thread, from the hotkey
+        // path, with the overlay already covering the screen.
         DispatchQueue.global(qos: .userInitiated).async {
-            let viewportRects = runViewportRects(source)
-            let elements: [Element]
-            if let cf = contentFrame {
-                elements = viewportRects.map { vr in
-                    Element(
-                        rect: CGRect(
-                            x: cf.origin.x + vr.x,
-                            y: cf.origin.y + vr.y,
-                            width: vr.width,
-                            height: vr.height
-                        ),
-                        label: vr.label
-                    )
+            let contentFrame = DOMExtractor.browserContentFrame(ofPID: target.pid)
+            DispatchQueue.main.async {
+                guard let cf = contentFrame else {
+                    completion([], .accessibilityUnavailable)
+                    return
                 }
-            } else {
-                elements = []
+                BrowserScripting.run(js: js, in: target, timeoutSeconds: 3, slot: DOMExtractor.requestSlot) { result in
+                    switch result {
+                    case .failure(let failure):
+                        completion([], failure)
+                    case .success(let json):
+                        let elements = DOMExtractor.parseViewportRects(json).map { vr in
+                            Element(
+                                rect: CGRect(
+                                    x: cf.origin.x + vr.x,
+                                    y: cf.origin.y + vr.y,
+                                    width: vr.width,
+                                    height: vr.height
+                                ),
+                                label: vr.label
+                            )
+                        }
+                        completion(elements, nil)
+                    }
+                }
             }
-            DispatchQueue.main.async { completion(elements) }
         }
     }
 
@@ -85,23 +108,31 @@ final class DOMExtractor {
     /// Returns the content-area frame (where the page renders) in CG screen coords —
     /// top-left origin, logical points. Walks the AX hierarchy for AXWebArea (Safari)
     /// or AXScrollArea (Chromium). Falls back to the focused window frame.
-    private static func browserContentFrame(of app: NSRunningApplication) -> CGRect? {
-        let appAX = AXUIElementCreateApplication(app.processIdentifier)
+    /// Safe to call off the main thread; every call is bounded by `axTimeout`.
+    private static func browserContentFrame(ofPID pid: pid_t) -> CGRect? {
+        let appAX = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(appAX, axTimeout)
         var focused: CFTypeRef?
         guard AXUIElementCopyAttributeValue(appAX, kAXFocusedWindowAttribute as CFString, &focused) == .success,
               let f = focused, CFGetTypeID(f) == AXUIElementGetTypeID() else { return nil }
         let window = f as! AXUIElement
 
-        if let webArea = findContentArea(in: window, depth: 0), let frame = axFrame(of: webArea) {
+        var budget = axNodeBudget
+        if let webArea = findContentArea(in: window, depth: 0, budget: &budget), let frame = axFrame(of: webArea) {
             return frame
         }
         return axFrame(of: window)
     }
 
-    private static func findContentArea(in element: AXUIElement, depth: Int) -> AXUIElement? {
-        if depth > 10 { return nil }
+    private static func findContentArea(in element: AXUIElement, depth: Int, budget: inout Int) -> AXUIElement? {
+        if depth > 10 || budget <= 0 { return nil }
+        budget -= 1
+        AXUIElementSetMessagingTimeout(element, axTimeout)
         var roleVal: CFTypeRef?
-        AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleVal)
+        let roleStatus = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleVal)
+        // A timeout means the browser isn't answering; every further call
+        // would wait just as long, so give up on the whole walk.
+        if roleStatus == .cannotComplete { budget = 0; return nil }
         if let role = roleVal as? String, role == "AXWebArea" || role == "AXScrollArea" {
             return element
         }
@@ -109,13 +140,15 @@ final class DOMExtractor {
         if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &children) == .success,
            let arr = children as? [AXUIElement] {
             for child in arr {
-                if let found = findContentArea(in: child, depth: depth + 1) { return found }
+                if let found = findContentArea(in: child, depth: depth + 1, budget: &budget) { return found }
+                if budget <= 0 { return nil }
             }
         }
         return nil
     }
 
     private static func axFrame(of element: AXUIElement) -> CGRect? {
+        AXUIElementSetMessagingTimeout(element, axTimeout)
         var posVal: CFTypeRef?
         var sizeVal: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posVal) == .success,
@@ -127,89 +160,15 @@ final class DOMExtractor {
         return CGRect(origin: pos, size: size)
     }
 
-    // MARK: - Browser detection (mirrors SVGExtractor — independent on purpose)
-
-    private enum Browser {
-        case safari
-        case chromium(name: String)
-    }
-
-    private static func detectBrowser(_ app: NSRunningApplication?) -> Browser? {
-        guard let bid = app?.bundleIdentifier else { return nil }
-        let lower = bid.lowercased()
-        if lower == "com.apple.safari" {
-            ensureSafariJSEnabled()
-            return .safari
-        }
-        let chromiumIDs = [
-            "com.google.chrome",
-            "company.thebrowser.browser",
-            "com.brave.browser",
-            "com.microsoft.edgemac",
-            "com.vivaldi.vivaldi",
-            "com.operasoftware.opera",
-            "ai.perplexity.comet",
-        ]
-        for cid in chromiumIDs where lower == cid {
-            ensureJSEnabled(bundleID: bid)
-            return .chromium(name: app?.localizedName ?? "Google Chrome")
-        }
-        if lower.contains("chrome") || lower.contains("chromium") {
-            ensureJSEnabled(bundleID: bid)
-            return .chromium(name: app?.localizedName ?? "Google Chrome")
-        }
-        return nil
-    }
-
-    private static func ensureJSEnabled(bundleID: String) {
-        let key = "AppleScriptEnabled"
-        if UserDefaults(suiteName: bundleID)?.bool(forKey: key) == true { return }
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
-        task.arguments = ["write", bundleID, key, "-bool", "true"]
-        try? task.run()
-        task.waitUntilExit()
-    }
-
-    private static func ensureSafariJSEnabled() {
-        let key = "AllowJavaScriptFromAppleEvents"
-        if UserDefaults(suiteName: "com.apple.Safari")?.bool(forKey: key) == true { return }
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
-        task.arguments = ["write", "com.apple.Safari", key, "-bool", "true"]
-        try? task.run()
-        task.waitUntilExit()
-    }
-
-    private static func appleScript(browser: Browser, js: String) -> String {
-        let escaped = js.replacingOccurrences(of: "\\", with: "\\\\")
-                        .replacingOccurrences(of: "\"", with: "\\\"")
-        switch browser {
-        case .safari:
-            return "tell application \"Safari\" to do JavaScript \"\(escaped)\" in document 1"
-        case .chromium(let name):
-            return """
-            tell application "\(name)"
-                tell active tab of front window
-                    execute javascript "\(escaped)"
-                end tell
-            end tell
-            """
-        }
-    }
+    // MARK: - Script result
 
     private struct ViewportRect {
         let x, y, width, height: CGFloat
         let label: String
     }
 
-    private static func runViewportRects(_ source: String) -> [ViewportRect] {
-        guard let script = NSAppleScript(source: source) else { return [] }
-        var error: NSDictionary?
-        let result = script.executeAndReturnError(&error)
-        if error != nil { return [] }
-        guard let json = result.stringValue,
-              let data = json.data(using: .utf8),
+    private static func parseViewportRects(_ json: String) -> [ViewportRect] {
+        guard let data = json.data(using: .utf8),
               let arr = try? JSONSerialization.jsonObject(with: data) as? [[Any]] else { return [] }
         return arr.compactMap { item in
             guard item.count == 5,

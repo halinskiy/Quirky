@@ -36,7 +36,7 @@ Enable the modes you use in the settings menu (right-click the menu-bar icon). P
 2. Open the disk image and drag **Quirky.app** into **Applications**
 3. Launch and grant the required permissions:
    - **Screen Recording** — for capture across every mode
-   - **Accessibility** — for the global hotkey
+   - **Accessibility** — for the DOM inspector, which reads the browser window's position through the Accessibility API (the hotkey itself doesn't need it)
    - **Automation** — for SVG and DOM extraction from browsers (prompted on first use)
 
 Quirky is signed with a Developer ID Application certificate and notarized by Apple — no quarantine bypass or `xattr` removal needed. A `.zip` of the bundle is also published alongside the DMG for Sparkle auto-updates.

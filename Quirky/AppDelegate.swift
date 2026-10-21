@@ -73,6 +73,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var spxIsGhost = false        // SPX overlay is in see-through (click-through) state
     private var previousApp: NSRunningApplication?
     private var preCapturedImages: [(displayID: CGDirectDisplayID, bounds: CGRect, image: CGImage)] = []
+    /// Bumped on every session start, mode switch and session end. Async
+    /// work (the browser scripts, the ghost re-shoot) remembers the value it
+    /// started under and is dropped when it comes back to a different one,
+    /// so a slow answer for a finished session can't reset the state, toast
+    /// over, or re-route the session that replaced it.
+    private var captureGeneration = 0
+    /// Display IDs and frames as they were when the session's screenshots
+    /// were taken. Any difference later means the overlay windows and the
+    /// frozen frame no longer match the screens, and the session ends.
+    private var screenLayoutAtCapture: [CGDirectDisplayID: CGRect] = [:]
+    private var screenRecordingAlertShown = false
+    private var lastScreenRecordingProbe = Date.distantPast
+    private var accessibilityPromptPending = false
+    private var accessibilityPromptShown = false
 
     // Stuck-overlay defenses. The overlay covers the whole screen above the
     // menu bar, so a wedged one leaves the machine unusable: the user sees a
@@ -93,10 +107,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMainMenu()
         setupStatusItem()
-        // Always register with ScreenCaptureKit so app appears in Screen & System Audio Recording list.
-        // On macOS 15+, CGPreflightScreenCaptureAccess() may return true without registering in the new TCC list.
-        PermissionManager.registerWithScreenCaptureKit()
-        if !PermissionManager.hasScreenRecordingPermission { PermissionManager.requestScreenRecordingPermission() }
+        // Register with ScreenCaptureKit so the app appears in the "Screen &
+        // System Audio Recording" list: on macOS 15+ the CG preflight can say
+        // yes without that entry existing. Requesting access registers too,
+        // so only one of the two runs — both used to, giving two prompts.
+        if PermissionManager.hasScreenRecordingPermission {
+            PermissionManager.registerWithScreenCaptureKit()
+        } else {
+            PermissionManager.requestScreenRecordingPermission()
+        }
         setupHotkeys()
         overlay.onSPXPreserveHide = { [weak self] in self?.handleSPXPreserveHide() }
         // Rect selections are routed by the mode that is active when the drag
@@ -111,6 +130,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(
             self, selector: #selector(handleAppResignedActive),
             name: NSApplication.didResignActiveNotification, object: nil)
+        // A display coming, going or changing resolution invalidates every
+        // overlay window's frame and the screenshot frozen behind it.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleScreenParametersChanged),
+            name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        // Sleep, display sleep and fast user switching all leave a stale
+        // frozen frame to come back to; end the session before they happen,
+        // and make sure nothing survived them after waking.
+        let workspace = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.willSleepNotification,
+                     NSWorkspace.screensDidSleepNotification,
+                     NSWorkspace.sessionDidResignActiveNotification] {
+            workspace.addObserver(self, selector: #selector(handleSystemWillSuspend), name: name, object: nil)
+        }
+        workspace.addObserver(self, selector: #selector(handleSystemDidWake),
+                              name: NSWorkspace.didWakeNotification, object: nil)
     }
 
     private func setupHotkeys() {
@@ -118,7 +153,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeys.onTab     = { [weak self] in self?.handleTabCycle(step: 1) }
         hotkeys.onShiftTab = { [weak self] in self?.handleTabCycle(step: -1) }
         hotkeys.onEscape  = { [weak self] in self?.handleEscapeHotkey() }
-        hotkeys.registerCaptureHotkey()
+        // Another app holding ⌘⇧1 used to leave Quirky silently inert.
+        if !hotkeys.registerCaptureHotkey() {
+            ToastWindow.show("⌘⇧1 is taken by another app", style: .error)
+        }
     }
 
     /// Sync the per-mode conditional hotkeys (Tab / Esc) with current state.
@@ -275,12 +313,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Called when SPX is dismissed via click — overlay closes but the segments
     /// remain in memory. Reset capture state so the next hotkey re-enters SPX.
     private func handleSPXPreserveHide() {
-        isCapturing = false
+        endCapture()
         spxResumePending = true
-        stopWatchdog()
-        // Without this the Tab and Esc hotkeys stay registered after capture
-        // ends, swallowing both keys system-wide in every other app.
-        syncStateHotkeys()
         smartReturnFocus()
     }
 
@@ -335,6 +369,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func statusItemClicked() {
+        // Cheap retry in case ⌘⇧1 was taken at launch and has since freed up.
+        hotkeys.registerCaptureHotkey()
         let event = NSApp.currentEvent
         let isRightClick = event?.type == .rightMouseUp
             || event?.modifierFlags.contains(.control) == true
@@ -377,7 +413,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ("Yellow", "FFD60A"), ("Green", "30D158"), ("Blue", "0A84FF"),
             ("Orange", "FF9F0A"), ("Pink", "FF375F"), ("Purple", "BF5AF2"),
         ]
-        let currentHex = UserDefaults.standard.string(forKey: "highlightColorHex") ?? "FFD60A"
+        let currentHex = HighlightColorStore.hex
         for (name, hex) in colors {
             let item = NSMenuItem(title: name, action: #selector(setHighlightColor(_:)), keyEquivalent: "")
             item.target = self
@@ -456,12 +492,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let front = NSWorkspace.shared.frontmostApplication
         if front?.bundleIdentifier != Bundle.main.bundleIdentifier { previousApp = front }
 
+        // The re-shoot lands a beat later. If the session ended or the mode
+        // changed in between, neither the fresh screenshots nor the
+        // re-activation belong to whatever is on screen now.
+        let generation = captureGeneration
         overlay.refreshBackground(capture: { [weak self] in
-            guard let self else { return [] }
+            guard let self, self.isCurrent(generation) else { return [] }
             self.preCaptureScreens()
             return self.screenImagesForOverlay
         }, completion: { [weak self] in
-            guard let self else { return }
+            guard let self, self.isCurrent(generation), self.currentMode == .spx else { return }
             self.spxIsGhost = false
             // Ghost is click-through, so the overlay heard nothing the whole
             // time it was transparent. Reset the clock before the idle checks
@@ -531,6 +571,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             overlay.forceInteractive()
         }
         currentMode = mode
+        captureGeneration &+= 1
+        let generation = captureGeneration
         LastModeStore.save(mode)
         modePopover.setCurrentMode(mode)
         syncStateHotkeys()
@@ -547,25 +589,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             overlay.switchToDOMMode { [weak self] label in
                 self?.handleDOMElementPicked(label)
             }
-            DOMExtractor.getDOMElements(from: previousApp) { [weak self] elements in
-                guard let self else { return }
-                if elements.isEmpty {
-                    ToastWindow.show("Open in Safari/Chrome", style: .error)
-                    if let next = self.nextEnabledMode(after: .dom, step: self.cycleDirection) {
-                        self.switchActiveCaptureMode(to: next)
-                    } else {
-                        self.cancelCapture()
-                        self.overlay.dismiss()
-                    }
-                    return
-                }
-                self.overlay.setDOMElements(elements)
-            }
+            requestDOMElements(generation: generation)
         case .svg:
             overlay.switchToSVGMode()
-            SVGExtractor.getSVGBoundingBoxes(from: previousApp) { [weak self] boxes in
-                self?.overlay.setSVGBoxes(boxes)
-            }
+            requestSVGBoxes(generation: generation)
         #endif
         case .spx:
             overlay.switchToSPXMode { [weak self] label in
@@ -574,13 +601,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func startCapture() {
-        guard PermissionManager.hasScreenRecordingPermission else {
-            PermissionManager.showPermissionDeniedAlert()
+    #if !MAS_BUILD
+    /// Asks the browser for its page elements. The answer arrives whenever
+    /// the browser gets around to it; by then the user may have switched
+    /// modes or ended the session, and such an answer is dropped rather than
+    /// toasting over, or re-routing, a session it doesn't belong to.
+    private func requestDOMElements(generation: Int) {
+        // DOM reads the browser's window geometry through the Accessibility
+        // API, which answers nothing without the Accessibility permission —
+        // the mode then failed silently with a misleading "Open in
+        // Safari/Chrome". Say what's missing and prompt once the overlay is
+        // gone (a system dialog under a shielding-level overlay is invisible).
+        guard PermissionManager.hasAccessibilityPermission else {
+            ToastWindow.show("DOM needs the Accessibility permission", style: .error)
+            accessibilityPromptPending = true
+            leaveUnavailableDOM()
             return
         }
-        preCaptureScreens()
+        DOMExtractor.getDOMElements(from: previousApp) { [weak self] elements, failure in
+            guard let self, self.isCurrent(generation), self.currentMode == .dom else { return }
+            if failure == .superseded { return }
+            if elements.isEmpty {
+                ToastWindow.show(failure?.userMessage ?? "Open in Safari/Chrome", style: .error)
+                self.leaveUnavailableDOM()
+                return
+            }
+            self.overlay.setDOMElements(elements)
+        }
+    }
+
+    /// DOM can't work right now (no browser in front, no permission): keep
+    /// cycling the way the user was headed, or end the session when DOM is
+    /// the only enabled mode.
+    private func leaveUnavailableDOM() {
+        if let next = nextEnabledMode(after: .dom, step: cycleDirection) {
+            switchActiveCaptureMode(to: next)
+        } else {
+            forceExitCapture()
+        }
+    }
+
+    private func requestSVGBoxes(generation: Int) {
+        SVGExtractor.getSVGBoundingBoxes(from: previousApp) { [weak self] boxes, failure in
+            guard let self, self.isCurrent(generation), self.currentMode == .svg else { return }
+            if let failure, failure.isPermissionProblem {
+                ToastWindow.show(failure.userMessage, style: .error)
+            }
+            self.overlay.setSVGBoxes(boxes)
+        }
+    }
+    #endif
+
+    private func startCapture() {
+        guard PermissionManager.hasScreenRecordingPermission else {
+            presentScreenRecordingDenied()
+            return
+        }
+        guard preCaptureScreens() else {
+            // A display that yields no image would get a black, opaque window
+            // over it — the whole screen gone until Esc. Don't start.
+            preCapturedImages = []
+            NSLog("Quirky: screen capture returned no image for at least one display")
+            ToastWindow.show("Capture failed", style: .error)
+            return
+        }
+        probeScreenRecordingAccess()
         isCapturing = true
+        captureGeneration &+= 1
         captureStartedAt = Date()
         startWatchdog()
         LastModeStore.save(currentMode)
@@ -591,76 +678,86 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         syncStateHotkeys()
         showModePopover()
 
+        let onCancel: () -> Void = { [weak self] in self?.cancelCapture() }
         switch currentMode {
         case .ocr:
-            overlay.showFast(screenImages: screenImagesForOverlay, onCancel: { [weak self] in
-                self?.cancelCapture()
-            })
+            overlay.showFast(screenImages: screenImagesForOverlay, onCancel: onCancel)
 
         #if !MAS_BUILD
         case .svg:
-            overlay.showForSVG(screenImages: screenImagesForOverlay, onCancel: { [weak self] in
-                self?.cancelCapture()
-            })
-            SVGExtractor.getSVGBoundingBoxes(from: previousApp) { [weak self] boxes in
-                self?.overlay.setSVGBoxes(boxes)
-            }
+            overlay.showForSVG(screenImages: screenImagesForOverlay, onCancel: onCancel)
         #endif
 
         case .hex:
             overlay.showForHEX(screenImages: screenImagesForOverlay, onColorPicked: { [weak self] hex in
                 self?.handleColorPicked(hex)
-            }, onCancel: { [weak self] in
-                self?.cancelCapture()
-            })
+            }, onCancel: onCancel)
 
         #if !MAS_BUILD
         case .dom:
             overlay.showForDOM(screenImages: screenImagesForOverlay, onElementPicked: { [weak self] label in
                 self?.handleDOMElementPicked(label)
-            }, onCancel: { [weak self] in
-                self?.cancelCapture()
-            })
-            DOMExtractor.getDOMElements(from: previousApp) { [weak self] elements in
-                guard let self else { return }
-                if elements.isEmpty {
-                    ToastWindow.show("Open in Safari/Chrome", style: .error)
-                    if let next = self.nextEnabledMode(after: .dom, step: self.cycleDirection) {
-                        self.switchActiveCaptureMode(to: next)
-                    } else {
-                        self.cancelCapture()
-                        self.overlay.dismiss()
-                    }
-                    return
-                }
-                self.overlay.setDOMElements(elements)
-            }
+            }, onCancel: onCancel)
         #endif
 
         case .spx:
             overlay.showForSPX(screenImages: screenImagesForOverlay, onSizePicked: { [weak self] label in
                 self?.handleSPXSizePicked(label)
-            }, onCancel: { [weak self] in
-                self?.cancelCapture()
-            })
+            }, onCancel: onCancel)
         }
+
+        // The screen set can change between the shot and the show; a session
+        // with no overlay window is one the user can neither see nor end.
+        guard overlay.isShowing else {
+            ToastWindow.show("Capture failed", style: .error)
+            cancelCapture()
+            return
+        }
+
+        #if !MAS_BUILD
+        let generation = captureGeneration
+        switch currentMode {
+        case .dom: requestDOMElements(generation: generation)
+        case .svg: requestSVGBoxes(generation: generation)
+        default: break
+        }
+        #endif
     }
 
-    private func cancelCapture() {
+    /// The single way session state comes down, whatever ended the session:
+    /// a pick, a drag, Esc, the watchdog, sleep, a display change. Drops the
+    /// full-screen screenshots the moment they stop being needed — tens of
+    /// MB per display, and a copy of the user's screen — where HEX, DOM, SPX
+    /// and SVG used to hold them until the next capture. Does not touch
+    /// focus: callers show their toast first, then `smartReturnFocus()`.
+    private func endCapture() {
         isCapturing = false
-        spxResumePending = false  // Esc / mode-switch wipes preserved SPX
         spxIsGhost = false
+        captureGeneration &+= 1
         preCapturedImages = []
         hotkeyBurst.removeAll()
         stopWatchdog()
         modePopover.hide()
+        // Without this the Tab and Esc hotkeys stay registered after capture
+        // ends, swallowing both keys system-wide in every other app.
         syncStateHotkeys()
+        showPendingAccessibilityPrompt()
+    }
+
+    private func cancelCapture() {
+        spxResumePending = false  // Esc / mode-switch wipes preserved SPX
+        endCapture()
         smartReturnFocus()
     }
 
+    /// True while the session or mode that issued `generation` is still the
+    /// one on screen. Every async completion checks it first.
+    private func isCurrent(_ generation: Int) -> Bool {
+        isCapturing && generation == captureGeneration
+    }
+
     private func handleColorPicked(_ hex: String) {
-        isCapturing = false
-        syncStateHotkeys()
+        endCapture()
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(hex, forType: .string)
         ToastWindow.show(hex)
@@ -669,8 +766,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     #if !MAS_BUILD
     private func handleDOMElementPicked(_ label: String) {
-        isCapturing = false
-        syncStateHotkeys()
+        endCapture()
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(label, forType: .string)
         ToastWindow.show(label)
@@ -679,8 +775,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     #endif
 
     private func handleSPXSizePicked(_ label: String) {
-        isCapturing = false
-        syncStateHotkeys()
+        endCapture()
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(label, forType: .string)
         ToastWindow.show(label)
@@ -703,14 +798,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: Pre-capture
 
-    private func preCaptureScreens() {
+    /// Shoots every display and records the screen layout the shots belong
+    /// to. Returns false when any display produced no image (asleep, mid-
+    /// reconfiguration, or a capture-rights problem): an overlay over such a
+    /// display would be solid black.
+    @discardableResult
+    private func preCaptureScreens() -> Bool {
         preCapturedImages = []
+        screenLayoutAtCapture = currentScreenLayout()
+        var complete = true
         for screen in NSScreen.screens {
-            if let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
-               let image = CGDisplayCreateImage(displayID) {
-                preCapturedImages.append((displayID, CGDisplayBounds(displayID), image))
+            guard let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
+                  let image = CGDisplayCreateImage(displayID) else {
+                complete = false
+                continue
+            }
+            preCapturedImages.append((displayID, CGDisplayBounds(displayID), image))
+        }
+        return complete && !preCapturedImages.isEmpty
+    }
+
+    private func currentScreenLayout() -> [CGDirectDisplayID: CGRect] {
+        var layout: [CGDirectDisplayID: CGRect] = [:]
+        for screen in NSScreen.screens {
+            if let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID {
+                layout[displayID] = screen.frame
             }
         }
+        return layout
     }
 
     private var screenImagesForOverlay: [(displayID: CGDirectDisplayID, image: CGImage)] {
@@ -734,18 +849,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: OCR
 
+    /// The session is over the moment the crop is in hand: state and focus
+    /// return right away and only the clipboard and a toast arrive later.
+    /// Recognition used to keep the session half-alive for seconds and then
+    /// return focus — and would hide the popover and forget `previousApp` of
+    /// whatever session the user had started in the meantime.
     private func performPreCapturedOCR(on rect: CGRect) {
-        isCapturing = false
-        syncStateHotkeys()
-        guard let cropped = cropPreCapture(to: rect) else {
+        let cropped = cropPreCapture(to: rect)
+        endCapture()
+        smartReturnFocus()
+        guard let cropped else {
             ToastWindow.show("Capture failed")
-            preCapturedImages = []
-            smartReturnFocus()
             return
         }
-        preCapturedImages = []
-        OCREngine.recognizeText(in: cropped) { [weak self] text in
-            guard let self else { return }
+        OCREngine.recognizeText(in: cropped) { text in
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty { ToastWindow.show("No text found") }
             else {
@@ -753,25 +870,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSPasteboard.general.setString(trimmed, forType: .string)
                 ToastWindow.show("Copied")
             }
-            self.smartReturnFocus()
         }
     }
 
     // MARK: SVG
 
     #if !MAS_BUILD
+    /// Same shape as OCR: the overlay is already down, so the session ends
+    /// now rather than when the browser answers (seconds, or an Automation
+    /// prompt later). The screenshots go with it; extraction never needed
+    /// them.
     private func performSVGExtraction(on rect: CGRect) {
         let browserApp = previousApp
-        SVGExtractor.extractSVGs(in: rect, from: browserApp) { [weak self] svgs in
-            guard let self else { return }
-            self.isCapturing = false
-            self.syncStateHotkeys()
-            if svgs.isEmpty { ToastWindow.show("No SVGs found") }
-            else {
+        endCapture()
+        smartReturnFocus()
+        SVGExtractor.extractSVGs(in: rect, from: browserApp) { svgs, failure in
+            if svgs.isEmpty {
+                if let failure {
+                    ToastWindow.show(failure.userMessage, style: .error)
+                } else {
+                    ToastWindow.show("No SVGs found")
+                }
+            } else {
                 SVGExtractor.copyToClipboard(svgs)
                 ToastWindow.show(svgs.count == 1 ? "1 SVG copied" : "\(svgs.count) SVGs copied")
             }
-            self.smartReturnFocus()
         }
     }
     #endif
@@ -782,6 +905,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         modePopover.hide()
         if NSApp.isActive { previousApp?.activate() }
         previousApp = nil
+    }
+
+    // MARK: Displays, sleep, permissions
+
+    @objc private func handleScreenParametersChanged() {
+        guard isCapturing || overlay.isShowing else { return }
+        // Dock and menu-bar changes post this notification too; only a real
+        // change in the display set or geometry invalidates the session —
+        // the windows keep their old frames and the frozen frame shows a
+        // layout that no longer exists.
+        guard currentScreenLayout() != screenLayoutAtCapture else { return }
+        forceExitCapture()
+        ToastWindow.show("Displays changed, capture closed", style: .error)
+    }
+
+    @objc private func handleSystemWillSuspend() {
+        guard isCapturing || overlay.isShowing else { return }
+        forceExitCapture()
+    }
+
+    @objc private func handleSystemDidWake() {
+        // Nothing should be live across a sleep. If something is, the frozen
+        // frame predates it; don't wait for the watchdog's two minutes.
+        if isCapturing || overlay.isShowing {
+            forceExitCapture()
+        } else {
+            preCapturedImages = []
+            stopWatchdog()
+            syncStateHotkeys()
+        }
+    }
+
+    /// Capture-start permission failure. The alert is modal and comes from a
+    /// hotkey, so it runs once per launch; later presses get a toast instead
+    /// of another modal loop that blocks the hotkeys themselves.
+    private func presentScreenRecordingDenied() {
+        if screenRecordingAlertShown {
+            ToastWindow.show("Screen Recording permission required", style: .error)
+            return
+        }
+        screenRecordingAlertShown = true
+        PermissionManager.showPermissionDeniedAlert()
+    }
+
+    /// Asks ScreenCaptureKit whether capture is actually authorized. The CG
+    /// preflight reflects the grant the process started with, so after the
+    /// user revokes Screen Recording in System Settings (or when the macOS
+    /// 15+ TCC entry is missing while preflight still passes) the capture
+    /// quietly degrades to the wallpaper. The probe is asynchronous and
+    /// throttled, and it only explains: it never ends a session on its own,
+    /// since the running process may legitimately keep capturing until it
+    /// relaunches.
+    private func probeScreenRecordingAccess() {
+        guard Date().timeIntervalSince(lastScreenRecordingProbe) > 60 else { return }
+        lastScreenRecordingProbe = Date()
+        PermissionManager.checkScreenRecordingAuthorization { authorized in
+            guard !authorized else { return }
+            ToastWindow.show("Screen Recording was revoked, grant it and relaunch Quirky", style: .error)
+        }
+    }
+
+    /// Shows the system Accessibility prompt once per launch, and only
+    /// between sessions: raised under the overlay it would be invisible and
+    /// the capture would look wedged.
+    private func showPendingAccessibilityPrompt() {
+        guard accessibilityPromptPending, !accessibilityPromptShown else { return }
+        accessibilityPromptPending = false
+        accessibilityPromptShown = true
+        DispatchQueue.main.async { PermissionManager.requestAccessibilityPermission() }
     }
 
     // MARK: Menu Actions
@@ -806,11 +998,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // user explicitly chose a different configuration, so the next hotkey
         // should follow it, not jump back into SPX.
         if !enabled.contains(.spx) { spxResumePending = false }
+        #if !MAS_BUILD
+        // Turning DOM on from the settings menu is the natural moment to ask
+        // for the Accessibility permission it depends on: no overlay is up
+        // to hide the system dialog.
+        if mode == .dom, enabled.contains(.dom), !PermissionManager.hasAccessibilityPermission {
+            accessibilityPromptShown = true
+            PermissionManager.requestAccessibilityPermission()
+        }
+        #endif
     }
 
     @objc private func setHighlightColor(_ sender: NSMenuItem) {
         guard let hex = sender.representedObject as? String else { return }
-        UserDefaults.standard.set(hex, forKey: "highlightColorHex")
+        HighlightColorStore.set(hex)
     }
 
     @objc private func quitApp() { NSApp.terminate(nil) }

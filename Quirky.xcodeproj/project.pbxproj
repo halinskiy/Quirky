@@ -10,7 +10,6 @@
 		AA0000000000000000000001 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000001 /* main.swift */; };
 		AA0000000000000000000002 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000002 /* AppDelegate.swift */; };
 		AA0000000000000000000003 /* OverlayWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000003 /* OverlayWindow.swift */; };
-		AA0000000000000000000004 /* ScreenCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000004 /* ScreenCapture.swift */; };
 		AA0000000000000000000005 /* OCREngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000005 /* OCREngine.swift */; };
 		AA0000000000000000000008 /* PermissionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000008 /* PermissionManager.swift */; };
 		AA0000000000000000000009 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000009 /* Assets.xcassets */; };
@@ -20,6 +19,7 @@
 		AA0000000000000000000015 /* SPXAnalyzer.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000015 /* SPXAnalyzer.swift */; };
 		AA0000000000000000000016 /* ModePopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000016 /* ModePopover.swift */; };
 		AA0000000000000000000017 /* HotkeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000017 /* HotkeyManager.swift */; };
+		AA0000000000000000000021 /* BrowserScripting.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000021 /* BrowserScripting.swift */; };
 		AA0000000000000000000020 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = SP0000000000000000000002 /* Sparkle */; };
 /* End PBXBuildFile section */
 
@@ -27,7 +27,6 @@
 		BB0000000000000000000001 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		BB0000000000000000000002 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		BB0000000000000000000003 /* OverlayWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverlayWindow.swift; sourceTree = "<group>"; };
-		BB0000000000000000000004 /* ScreenCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenCapture.swift; sourceTree = "<group>"; };
 		BB0000000000000000000005 /* OCREngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OCREngine.swift; sourceTree = "<group>"; };
 		BB0000000000000000000008 /* PermissionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionManager.swift; sourceTree = "<group>"; };
 		BB0000000000000000000009 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -39,6 +38,7 @@
 		BB0000000000000000000015 /* SPXAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SPXAnalyzer.swift; sourceTree = "<group>"; };
 		BB0000000000000000000016 /* ModePopover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModePopover.swift; sourceTree = "<group>"; };
 		BB0000000000000000000017 /* HotkeyManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyManager.swift; sourceTree = "<group>"; };
+		BB0000000000000000000021 /* BrowserScripting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserScripting.swift; sourceTree = "<group>"; };
 		BB0000000000000000000018 /* Info-MAS.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "Info-MAS.plist"; sourceTree = "<group>"; };
 		BB0000000000000000000019 /* Quirky-MAS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Quirky-MAS.entitlements"; sourceTree = "<group>"; };
 		BB000000000000000000000C /* Quirky.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Quirky.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -70,7 +70,6 @@
 				BB0000000000000000000001 /* main.swift */,
 				BB0000000000000000000002 /* AppDelegate.swift */,
 				BB0000000000000000000003 /* OverlayWindow.swift */,
-				BB0000000000000000000004 /* ScreenCapture.swift */,
 				BB0000000000000000000005 /* OCREngine.swift */,
 				BB0000000000000000000008 /* PermissionManager.swift */,
 				BB0000000000000000000011 /* ToastWindow.swift */,
@@ -79,6 +78,7 @@
 				BB0000000000000000000015 /* SPXAnalyzer.swift */,
 				BB0000000000000000000016 /* ModePopover.swift */,
 				BB0000000000000000000017 /* HotkeyManager.swift */,
+				BB0000000000000000000021 /* BrowserScripting.swift */,
 				BB0000000000000000000009 /* Assets.xcassets */,
 				BB000000000000000000000A /* Info.plist */,
 				BB000000000000000000000B /* Quirky.entitlements */,
@@ -191,7 +191,6 @@
 				AA0000000000000000000001 /* main.swift in Sources */,
 				AA0000000000000000000002 /* AppDelegate.swift in Sources */,
 				AA0000000000000000000003 /* OverlayWindow.swift in Sources */,
-				AA0000000000000000000004 /* ScreenCapture.swift in Sources */,
 				AA0000000000000000000005 /* OCREngine.swift in Sources */,
 				AA0000000000000000000008 /* PermissionManager.swift in Sources */,
 				AA0000000000000000000011 /* ToastWindow.swift in Sources */,
@@ -200,6 +199,7 @@
 				AA0000000000000000000015 /* SPXAnalyzer.swift in Sources */,
 				AA0000000000000000000016 /* ModePopover.swift in Sources */,
 				AA0000000000000000000017 /* HotkeyManager.swift in Sources */,
+				AA0000000000000000000021 /* BrowserScripting.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
