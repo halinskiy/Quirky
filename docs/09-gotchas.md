@@ -24,3 +24,7 @@
 
 ## macOS 26 Core Text
 Строки HUD строятся через CTLine из именованных CTFont, не через `monospacedSystemFont`: ленивые дескрипторы падали в `CTLineCreate`.
+
+## OCR молча не копирует (24.10.2026)
+Две причины подряд. Первый клик по оверлею уходил на активацию окна (Quirky не становится активным по хоткею на новых macOS), поэтому `SelectionView.acceptsFirstMouse` = true, не убирать. Модель Vision `.accurate` macOS выгружает в простое, и холодная загрузка под нагрузкой занимает 30–70 с; `OCREngine.keepWarm()` держит её загруженной. `.fast` не читает кириллицу («HoBblk1» вместо «Новый»), поэтому быстрый режим только запасной.
+Диагностика: `/usr/bin/log show --last 10m --predicate 'subsystem == "com.threempq.quirky"'`.

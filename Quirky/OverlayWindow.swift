@@ -1,5 +1,8 @@
 import Cocoa
 import Vision
+import os
+
+let captureLog = Logger(subsystem: "com.threempq.quirky", category: "capture")
 
 struct DOMElementBox {
     let rect: CGRect    // view-local coords
@@ -459,6 +462,12 @@ final class SelectionView: NSView {
         ))
     }
 
+    // The click that starts a selection must reach the overlay even when
+    // macOS declined to make Quirky the active app. Without this the first
+    // mouseDown only activated the window, the drag began with no anchor and
+    // mouseUp bailed out silently: nothing copied, no error.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     override func cursorUpdate(with event: NSEvent) { NSCursor.crosshair.set() }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .crosshair) }
 
@@ -700,11 +709,17 @@ final class SelectionView: NSView {
             // A bare click is intentionally a no-op — Esc is the only exit.
             return
         }
-        guard isSelecting else { return }
+        guard isSelecting else {
+            captureLog.error("mouseUp without a selection in progress (mouseDown never arrived)")
+            return
+        }
         isSelecting = false
         if !isDragging {
             let clickPoint = convert(event.locationInWindow, from: nil)
-            guard let box = activeBoxes.first(where: { $0.contains(clickPoint) }) else { onCancel?(); return }
+            guard let box = activeBoxes.first(where: { $0.contains(clickPoint) }) else {
+                captureLog.notice("click outside any word (\(self.activeBoxes.count, privacy: .public) boxes), cancelling")
+                onCancel?(); return
+            }
             completeWith(viewRect: box)
             return
         }
@@ -728,7 +743,10 @@ final class SelectionView: NSView {
                 finalRect = contained.reduce(contained[0]) { $0.union($1) }
             }
         }
-        guard finalRect.width > 2, finalRect.height > 2 else { onCancel?(); return }
+        guard finalRect.width > 2, finalRect.height > 2 else {
+            captureLog.notice("selection too small, cancelling")
+            onCancel?(); return
+        }
         completeWith(viewRect: finalRect)
     }
 

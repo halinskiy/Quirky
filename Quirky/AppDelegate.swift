@@ -91,6 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: Lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        OCREngine.keepWarm()
         setupMainMenu()
         setupStatusItem()
         // Always register with ScreenCaptureKit so app appears in Screen & System Audio Recording list.
@@ -149,6 +150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Unconditional teardown: overlay down, ghost cleared, hotkeys released,
     /// popover closed, focus returned. Every escape route calls this.
     private func forceExitCapture() {
+        captureLog.notice("forceExitCapture")
         overlay.forceInteractive()
         overlay.dismiss()
         cancelCapture()
@@ -160,6 +162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard overlay.isShowing, !spxIsGhost else { return }
         // Ignore the brief flap while the overlay is still coming up.
         guard Date().timeIntervalSince(captureStartedAt) > 0.8 else { return }
+        captureLog.notice("app resigned active during capture, yielding overlay")
         yieldOverlay()
     }
 
@@ -228,6 +231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                                                  eventType: .mouseMoved)
         let overlayIdle = Date().timeIntervalSince(lastOverlayActivity)
         if overlayIdle > 4.0 && systemIdle < 1.0 {
+            captureLog.notice("watchdog: overlay deaf for 4 s, yielding")
             yieldOverlay()
             return
         }
@@ -580,6 +584,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         preCaptureScreens()
+        // Start loading the text model while the user is still dragging.
+        if currentMode == .ocr { OCREngine.warmUp() }
+        captureLog.notice("startCapture mode=\(self.currentMode.rawValue, privacy: .public) screens=\(self.preCapturedImages.count, privacy: .public) active=\(NSApp.isActive, privacy: .public)")
         isCapturing = true
         captureStartedAt = Date()
         startWatchdog()
@@ -691,6 +698,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// mouse-up without ever completing a selection, so they land here only if
     /// something desyncs — ignoring them is the safe read.
     private func handleCaptureComplete(_ cgRect: CGRect) {
+        captureLog.notice("rect selected mode=\(self.currentMode.rawValue, privacy: .public) rect=\(NSStringFromRect(cgRect), privacy: .public)")
         switch currentMode {
         case .ocr: performPreCapturedOCR(on: cgRect)
         #if !MAS_BUILD
@@ -738,15 +746,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         isCapturing = false
         syncStateHotkeys()
         guard let cropped = cropPreCapture(to: rect) else {
+            captureLog.error("crop failed, \(self.preCapturedImages.count, privacy: .public) screenshots held")
             ToastWindow.show("Capture failed")
             preCapturedImages = []
             smartReturnFocus()
             return
         }
         preCapturedImages = []
+        // Recognition can take a moment; say so instead of looking dead.
+        ToastWindow.show("Recognizing…")
         OCREngine.recognizeText(in: cropped) { [weak self] text in
             guard let self else { return }
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            captureLog.notice("OCR done, \(trimmed.count, privacy: .public) chars")
             if trimmed.isEmpty { ToastWindow.show("No text found") }
             else {
                 NSPasteboard.general.clearContents()

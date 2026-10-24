@@ -1,6 +1,9 @@
 # Changelog
 
 ## 1.1.3 (build 9) — 24.10.2026, Mac App Store
+- OCR «ничего не копирует»: (1) первый клик по оверлею съедался активацией окна, когда macOS не делала Quirky активным, выделение начиналось без mouseDown и молча терялось; теперь `acceptsFirstMouse`. (2) Модель Vision `.accurate` на занятом маке грузилась 30–70 с, ошибки глотались и в буфер уходила пустота. Теперь прогрев при запуске, каждые 4 минуты и при ⌘⇧1; при ошибке точного режима запасной быстрый; тост «Recognizing…»; ошибки в лог.
+- Лог захвата: `/usr/bin/log show --predicate 'subsystem == "com.threempq.quirky"'` (в zsh `log` перехватывает встроенная команда, звать по полному пути).
+- `Scripts/build.sh` подписывает из связки login.
 - Первая сборка для Mac App Store: OCR, HEX, SPX; бесплатно. Исправлено: магазинный бинарник ссылался на вырезанный Sparkle и упал бы при запуске (`-dead_strip_dylibs`).
 - Фаза вырезания Sparkle переподписывает с `$OTHER_CODE_SIGN_FLAGS` (подпись из связки login).
 - `ITSAppUsesNonExemptEncryption = NO` в Info-MAS.plist.

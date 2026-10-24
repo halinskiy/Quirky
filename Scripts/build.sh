@@ -12,6 +12,10 @@ cd "$ROOT"
 BUILD_CONFIG="${BUILD_CONFIG:-Release}"
 QUIRKY_SIGN_IDENTITY="${QUIRKY_SIGN_IDENTITY:-Developer ID Application: Kostiantyn Halynskyi (PDB9JGGX74)}"
 DEVELOPMENT_TEAM="${DEVELOPMENT_TEAM:-PDB9JGGX74}"
+# Sign from the login keychain only: another project's build keychain sits first
+# in the search list, and codesign then fails with errSecInternalComponent or
+# pops a password dialog nobody can answer.
+QUIRKY_SIGN_KEYCHAIN="${QUIRKY_SIGN_KEYCHAIN:-$HOME/Library/Keychains/login.keychain-db}"
 
 BUILD_DIR="$ROOT/build"
 DD_DIR="$BUILD_DIR/DerivedData"
@@ -30,7 +34,7 @@ xcodebuild \
     CODE_SIGN_IDENTITY="$QUIRKY_SIGN_IDENTITY" \
     CODE_SIGN_STYLE=Manual \
     DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
-    OTHER_CODE_SIGN_FLAGS="--timestamp --options=runtime" \
+    OTHER_CODE_SIGN_FLAGS="--timestamp --options=runtime --keychain $QUIRKY_SIGN_KEYCHAIN" \
     -quiet \
     build
 
@@ -59,7 +63,7 @@ if [ -d "$SPARKLE" ]; then
     if [ ! -d "$SPARKLE_VER" ]; then
         SPARKLE_VER="$(ls -d "$SPARKLE"/Versions/[A-Z] 2>/dev/null | head -n1)"
     fi
-    SIGN_OPTS=(--force --options runtime --timestamp --sign "$QUIRKY_SIGN_IDENTITY")
+    SIGN_OPTS=(--force --options runtime --timestamp --keychain "$QUIRKY_SIGN_KEYCHAIN" --sign "$QUIRKY_SIGN_IDENTITY")
     for target in \
         "$SPARKLE_VER/XPCServices/Installer.xpc/Contents/MacOS/Installer" \
         "$SPARKLE_VER/XPCServices/Installer.xpc" \
