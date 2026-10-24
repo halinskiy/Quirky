@@ -16,5 +16,5 @@ Esc выходит всегда, ⌘⇧1 в SPX включает ghost (экра
 
 - Репо: `halinskiy/Quirky`, локально `~/quirky`.
 - Версии (24.10.2026): через Sparkle выпущена 1.1.2 (build 8); 1.1.3 (build 9) собрана и стоит локально, в appcast ещё не выложена.
-- Mac App Store: «Quirky Screen Capture», app id 6773094144, бесплатно. Загружена сборка 9 без фиксов OCR от 24.10, перед ревью перезалить новой. Метаданные и скриншоты заполнены; ждёт, пока Костя опубликует анкету App Privacy («Data Not Collected»), потом отправка на ревью.
+- Mac App Store: «Quirky Screen Capture», app id 6773094144, бесплатно. 1.1.3 (build 10, с фиксами OCR) отправлена на ревью 24.10.2026, статус Waiting for Review; App Privacy опубликована («Data Not Collected»), релиз автоматически после одобрения.
 - Архитектура: [01-architecture.md](01-architecture.md).
