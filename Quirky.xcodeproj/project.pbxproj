@@ -179,7 +179,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "# Mac App Store forbids third-party updaters. The Sparkle framework\n# is still in the SPM dependency list (so the Direct build keeps\n# auto-update support), but for the MAS configuration we delete the\n# framework from the embedded bundle and re-sign the result.\nif [ \"$CONFIGURATION\" != \"MAS Release\" ]; then\n  exit 0\nfi\nSPARKLE=\"$CODESIGNING_FOLDER_PATH/Contents/Frameworks/Sparkle.framework\"\nif [ -d \"$SPARKLE\" ]; then\n  echo \"==> MAS build: removing $SPARKLE\"\n  rm -rf \"$SPARKLE\"\nfi\n# Re-sign the bundle so the embedded code-directory hashes match the\n# now-smaller bundle layout. Skipped for ad-hoc / unsigned local builds\n# (where EXPANDED_CODE_SIGN_IDENTITY is empty or '-').\nif [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ] && [ \"$EXPANDED_CODE_SIGN_IDENTITY\" != \"-\" ]; then\n  /usr/bin/codesign --force --options=runtime --timestamp \\\n    --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \\\n    --entitlements \"$CODE_SIGN_ENTITLEMENTS\" \\\n    \"$CODESIGNING_FOLDER_PATH\"\nelse\n  echo \"==> MAS build: skipping re-sign (ad-hoc/unsigned local build)\"\nfi\n";
+			shellScript = "# Mac App Store forbids third-party updaters. The Sparkle framework\n# is still in the SPM dependency list (so the Direct build keeps\n# auto-update support), but for the MAS configuration we delete the\n# framework from the embedded bundle and re-sign the result.\nif [ \"$CONFIGURATION\" != \"MAS Release\" ]; then\n  exit 0\nfi\nSPARKLE=\"$CODESIGNING_FOLDER_PATH/Contents/Frameworks/Sparkle.framework\"\nif [ -d \"$SPARKLE\" ]; then\n  echo \"==> MAS build: removing $SPARKLE\"\n  rm -rf \"$SPARKLE\"\nfi\n# Re-sign the bundle so the embedded code-directory hashes match the\n# now-smaller bundle layout. Skipped for ad-hoc / unsigned local builds\n# (where EXPANDED_CODE_SIGN_IDENTITY is empty or '-').\nif [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ] && [ \"$EXPANDED_CODE_SIGN_IDENTITY\" != \"-\" ]; then\n  /usr/bin/codesign --force --options=runtime --timestamp $OTHER_CODE_SIGN_FLAGS \\\n    --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \\\n    --entitlements \"$CODE_SIGN_ENTITLEMENTS\" \\\n    \"$CODESIGNING_FOLDER_PATH\"\nelse\n  echo \"==> MAS build: skipping re-sign (ad-hoc/unsigned local build)\"\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -326,7 +326,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = PDB9JGGX74;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -335,7 +335,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.1.2;
+				MARKETING_VERSION = 1.1.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.threempq.quirky;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -351,7 +351,7 @@
 				CODE_SIGN_IDENTITY = "Developer ID Application";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = PDB9JGGX74;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -360,7 +360,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.1.2;
+				MARKETING_VERSION = 1.1.3;
 				OTHER_CODE_SIGN_FLAGS = "--timestamp --options=runtime";
 				PRODUCT_BUNDLE_IDENTIFIER = com.threempq.quirky;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -397,7 +397,7 @@
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = PDB9JGGX74;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -406,11 +406,12 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.1.2;
+				MARKETING_VERSION = 1.1.3;
 				OTHER_CODE_SIGN_FLAGS = "--timestamp";
 				PRODUCT_BUNDLE_IDENTIFIER = com.threempq.quirky;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "Quirky MAS Distribution";
+				OTHER_LDFLAGS = "-Wl,-dead_strip_dylibs";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "MAS_BUILD";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;

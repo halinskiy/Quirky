@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 1.1.3 (build 9) — 24.10.2026, Mac App Store
+- Первая сборка для Mac App Store: OCR, HEX, SPX; бесплатно. Исправлено: магазинный бинарник ссылался на вырезанный Sparkle и упал бы при запуске (`-dead_strip_dylibs`).
+- Фаза вырезания Sparkle переподписывает с `$OTHER_CODE_SIGN_FLAGS` (подпись из связки login).
+- `ITSAppUsesNonExemptEncryption = NO` в Info-MAS.plist.
 - Оверлей: скриншот композитится GPU как `layer.contents`, HUD рисуется в отдельном подслое; таймер пунктира перерисовывает только когда пунктир на экране; HEX читает пиксели из кэша вместо полного рендера на каждое движение мыши. Замер на M3 Pro: CPU на кадр 0,3–2 мс до и после, заметного лага не было.
 - Документация: AGENTS.md, docs/, changelog.
 

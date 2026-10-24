@@ -1,0 +1,49 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+*{box-sizing:border-box;margin:0}
+html,body{width:1440px;height:900px;overflow:hidden;font-family:-apple-system,"SF Pro Text","Inter",sans-serif}
+body{background:linear-gradient(135deg,#f6d7c3 0%,#e9c6e0 45%,#b9cdf0 100%)}
+.menubar{height:28px;background:rgba(255,255,255,.55);backdrop-filter:blur(20px);display:flex;align-items:center;padding:0 16px;gap:20px;font-size:13px;color:#1d1d1f}
+.menubar b{font-weight:600}
+.win{position:absolute;left:120px;top:76px;width:1200px;height:760px;background:#fbfaf8;border-radius:14px;box-shadow:0 30px 80px rgba(40,30,60,.28),0 0 0 1px rgba(0,0,0,.08);overflow:hidden}
+.bar{height:52px;border-bottom:1px solid #e7e3dd;display:flex;align-items:center;padding:0 20px;gap:8px}
+.dot{width:12px;height:12px;border-radius:50%}
+.title{margin-left:16px;font-size:14px;font-weight:600;color:#3a3530}
+.content{display:grid;grid-template-columns:1fr 360px;height:708px}
+.main{padding:48px 56px}
+h1{font-size:40px;line-height:1.1;letter-spacing:-1px;color:#1f1b17}
+.lead{margin-top:16px;font-size:18px;line-height:1.55;color:#4b453e;max-width:600px}
+.cards{display:flex;gap:24px;margin-top:40px}
+.card{width:280px;background:#fff;border-radius:16px;box-shadow:0 1px 0 rgba(0,0,0,.06),0 8px 24px rgba(0,0,0,.06);overflow:hidden}
+.ph{height:150px}
+.card .t{padding:16px 20px 4px;font-size:17px;font-weight:600;color:#1f1b17}
+.card .s{padding:0 20px 20px;font-size:14px;color:#7a7168}
+.btn{display:inline-block;margin:0 20px 20px;padding:10px 18px;border-radius:999px;background:#ff4d24;color:#fff;font-size:14px;font-weight:600}
+.side{border-left:1px solid #e7e3dd;padding:40px 32px;background:#f5f2ee}
+.side h2{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#8a8077;margin-bottom:16px}
+.sw{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:36px}
+.sw div{height:72px;border-radius:12px}
+.row{display:flex;justify-content:space-between;font-size:15px;color:#3a3530;padding:12px 0;border-bottom:1px solid #e7e3dd}
+.row span:last-child{color:#8a8077;font-variant-numeric:tabular-nums}
+</style></head><body>
+<div class="menubar"><b>Notes</b><span>File</span><span>Edit</span><span>View</span><span>Window</span></div>
+<div class="win">
+ <div class="bar"><div class="dot" style="background:#ff5f57"></div><div class="dot" style="background:#febc2e"></div><div class="dot" style="background:#28c840"></div><div class="title">Spring campaign · landing review</div></div>
+ <div class="content">
+  <div class="main">
+   <h1>Weekends worth the trip</h1>
+   <p class="lead">Three short city breaks, planned around good food and long walks. Book by Friday and the second night is on us.</p>
+   <div class="cards">
+    <div class="card"><div class="ph" style="background:linear-gradient(160deg,#ffb38a,#ff6f61)"></div><div class="t">Lisbon by tram</div><div class="s">2 nights from $240</div><span class="btn">See dates</span></div>
+    <div class="card"><div class="ph" style="background:linear-gradient(160deg,#9fd8c8,#3b8f8a)"></div><div class="t">Porto riverside</div><div class="s">2 nights from $210</div><span class="btn">See dates</span></div>
+   </div>
+  </div>
+  <div class="side">
+   <h2>Palette</h2>
+   <div class="sw"><div style="background:#ff4d24"></div><div style="background:#ffb38a"></div><div style="background:#3b8f8a"></div><div style="background:#1f1b17"></div><div style="background:#e9c6e0"></div><div style="background:#b9cdf0"></div></div>
+   <h2>Spacing</h2>
+   <div class="row"><span>Card gap</span><span>24 px</span></div>
+   <div class="row"><span>Card radius</span><span>16 px</span></div>
+   <div class="row"><span>Section padding</span><span>48 px</span></div>
+  </div>
+ </div>
+</div></body></html>
