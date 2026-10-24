@@ -69,7 +69,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotkeys = HotkeyManager()
     private var isCapturing = false
     private var currentMode: CaptureMode = .ocr
-    private var spxResumePending = false  // true while SPX is hidden-but-preserved
+    /// Bumped on every new session. Async results (Vision, AppleScript,
+    /// background refresh) check it so a late answer never lands on a
+    /// session the user has already moved past.
+    private var captureSession = 0
     private var spxIsGhost = false        // SPX overlay is in see-through (click-through) state
     private var previousApp: NSRunningApplication?
     private var preCapturedImages: [(displayID: CGDirectDisplayID, bounds: CGRect, image: CGImage)] = []
@@ -99,7 +102,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         PermissionManager.registerWithScreenCaptureKit()
         if !PermissionManager.hasScreenRecordingPermission { PermissionManager.requestScreenRecordingPermission() }
         setupHotkeys()
-        overlay.onSPXPreserveHide = { [weak self] in self?.handleSPXPreserveHide() }
         // Rect selections are routed by the mode that is active when the drag
         // ends, not by the one the session started in.
         overlay.onRectSelected = { [weak self] rect in self?.handleCaptureComplete(rect) }
@@ -263,7 +265,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !isCapturing { return true }
         guard !spxIsGhost else { return false }
         if overlay.hasClickThroughWindow { return true }
-        if !NSApp.isActive { return true }
         // Never heard a single event since the overlay came up.
         return lastOverlayActivity < captureStartedAt
             && Date().timeIntervalSince(captureStartedAt) > 3.0
@@ -274,18 +275,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         lastOverlayActivity = Date()
         cycleMode(step: step)
         showModePopover()
-    }
-
-    /// Called when SPX is dismissed via click — overlay closes but the segments
-    /// remain in memory. Reset capture state so the next hotkey re-enters SPX.
-    private func handleSPXPreserveHide() {
-        isCapturing = false
-        spxResumePending = true
-        stopWatchdog()
-        // Without this the Tab and Esc hotkeys stay registered after capture
-        // ends, swallowing both keys system-wide in every other app.
-        syncStateHotkeys()
-        smartReturnFocus()
     }
 
     // MARK: Status Item & Menu
@@ -424,13 +413,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Pressing the hotkey is the user talking to the overlay, so it counts
         // as activity — otherwise the idle checks fire on a session the user
         // is clearly driving from the keyboard.
-        lastOverlayActivity = Date()
         if isCapturing || overlay.isShowing {
+            // Checked before the press is counted as activity, otherwise the
+            // "never heard an event" branch of overlaySeemsWedged can't fire.
             if registerHotkeyBurstAndCheckPanic() {
                 forceExitCapture()
                 return
             }
         }
+        lastOverlayActivity = Date()
         if isCapturing {
             // In SPX the hotkey toggles ghost/opaque overlay; mode-switching
             // is done in the menu-bar popover (or by cycling with Tab).
@@ -478,18 +469,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         })
     }
 
-    /// Mode a fresh capture session opens in: the SPX session being resumed,
-    /// otherwise the mode the user last worked in, otherwise the first
-    /// enabled one.
+    /// Mode a fresh capture session opens in: the mode the user last worked
+    /// in, otherwise the first enabled one.
     private var startMode: CaptureMode {
         let enabled = EnabledModesStore.load()
-        // spxResumePending only counts if SPX is still in the enabled set —
-        // otherwise the user disabled SPX between sessions, so honor the
-        // current enabled list and drop the stale resume hint.
-        if spxResumePending && !enabled.contains(.spx) {
-            spxResumePending = false
-        }
-        if spxResumePending { return .spx }
         if let last = LastModeStore.load(), enabled.contains(last) { return last }
         return enabled.first ?? .ocr
     }
@@ -551,8 +534,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             overlay.switchToDOMMode { [weak self] label in
                 self?.handleDOMElementPicked(label)
             }
+            let session = captureSession
             DOMExtractor.getDOMElements(from: previousApp) { [weak self] elements in
-                guard let self else { return }
+                guard let self, self.isCurrent(session, in: .dom) else { return }
                 if elements.isEmpty {
                     ToastWindow.show("Open in Safari/Chrome", style: .error)
                     if let next = self.nextEnabledMode(after: .dom, step: self.cycleDirection) {
@@ -567,15 +551,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         case .svg:
             overlay.switchToSVGMode()
+            let session = captureSession
             SVGExtractor.getSVGBoundingBoxes(from: previousApp) { [weak self] boxes in
-                self?.overlay.setSVGBoxes(boxes)
+                guard let self, self.isCurrent(session, in: .svg) else { return }
+                self.overlay.setSVGBoxes(boxes)
             }
         #endif
         case .spx:
-            overlay.switchToSPXMode { [weak self] label in
-                self?.handleSPXSizePicked(label)
-            }
+            overlay.switchToSPXMode()
         }
+    }
+
+    /// True while `session` is still the live capture and still in `mode`.
+    private func isCurrent(_ session: Int, in mode: CaptureMode) -> Bool {
+        isCapturing && captureSession == session && currentMode == mode
     }
 
     private func startCapture() {
@@ -588,6 +577,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if currentMode == .ocr { OCREngine.warmUp() }
         captureLog.notice("startCapture mode=\(self.currentMode.rawValue, privacy: .public) screens=\(self.preCapturedImages.count, privacy: .public) active=\(NSApp.isActive, privacy: .public)")
         isCapturing = true
+        captureSession += 1
         captureStartedAt = Date()
         startWatchdog()
         LastModeStore.save(currentMode)
@@ -598,101 +588,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         syncStateHotkeys()
         showModePopover()
 
-        switch currentMode {
-        case .ocr:
-            overlay.showFast(screenImages: screenImagesForOverlay, onCancel: { [weak self] in
-                self?.cancelCapture()
-            })
-
-        #if !MAS_BUILD
-        case .svg:
-            overlay.showForSVG(screenImages: screenImagesForOverlay, onCancel: { [weak self] in
-                self?.cancelCapture()
-            })
-            SVGExtractor.getSVGBoundingBoxes(from: previousApp) { [weak self] boxes in
-                self?.overlay.setSVGBoxes(boxes)
-            }
-        #endif
-
-        case .hex:
-            overlay.showForHEX(screenImages: screenImagesForOverlay, onColorPicked: { [weak self] hex in
-                self?.handleColorPicked(hex)
-            }, onCancel: { [weak self] in
-                self?.cancelCapture()
-            })
-
-        #if !MAS_BUILD
-        case .dom:
-            overlay.showForDOM(screenImages: screenImagesForOverlay, onElementPicked: { [weak self] label in
-                self?.handleDOMElementPicked(label)
-            }, onCancel: { [weak self] in
-                self?.cancelCapture()
-            })
-            DOMExtractor.getDOMElements(from: previousApp) { [weak self] elements in
-                guard let self else { return }
-                if elements.isEmpty {
-                    ToastWindow.show("Open in Safari/Chrome", style: .error)
-                    if let next = self.nextEnabledMode(after: .dom, step: self.cycleDirection) {
-                        self.switchActiveCaptureMode(to: next)
-                    } else {
-                        self.cancelCapture()
-                        self.overlay.dismiss()
-                    }
-                    return
-                }
-                self.overlay.setDOMElements(elements)
-            }
-        #endif
-
-        case .spx:
-            overlay.showForSPX(screenImages: screenImagesForOverlay, onSizePicked: { [weak self] label in
-                self?.handleSPXSizePicked(label)
-            }, onCancel: { [weak self] in
-                self?.cancelCapture()
-            })
-        }
+        overlay.show(screenImages: screenImagesForOverlay, onCancel: { [weak self] in
+            self?.cancelCapture()
+        })
+        switchActiveCaptureMode(to: currentMode)
     }
 
     private func cancelCapture() {
+        finishCapture()
+    }
+
+    /// Single exit for every session end: releases the screenshots (~25 MB a
+    /// Retina screen), the session hotkeys and the watchdog, and hands focus
+    /// back right away. Results that arrive later (OCR, SVG) only touch the
+    /// clipboard, so they can't steal focus from whatever the user did next.
+    private func finishCapture() {
         isCapturing = false
-        spxResumePending = false  // Esc / mode-switch wipes preserved SPX
         spxIsGhost = false
         preCapturedImages = []
         hotkeyBurst.removeAll()
         stopWatchdog()
-        modePopover.hide()
         syncStateHotkeys()
         smartReturnFocus()
     }
 
-    private func handleColorPicked(_ hex: String) {
-        isCapturing = false
-        syncStateHotkeys()
+    private func copyResult(_ text: String, toast: String? = nil) {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(hex, forType: .string)
-        ToastWindow.show(hex)
-        smartReturnFocus()
+        NSPasteboard.general.setString(text, forType: .string)
+        ToastWindow.show(toast ?? text)
+    }
+
+    private func handleColorPicked(_ hex: String) {
+        finishCapture()
+        copyResult(hex)
     }
 
     #if !MAS_BUILD
     private func handleDOMElementPicked(_ label: String) {
-        isCapturing = false
-        syncStateHotkeys()
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(label, forType: .string)
-        ToastWindow.show(label)
-        smartReturnFocus()
+        finishCapture()
+        copyResult(label)
     }
     #endif
-
-    private func handleSPXSizePicked(_ label: String) {
-        isCapturing = false
-        syncStateHotkeys()
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(label, forType: .string)
-        ToastWindow.show(label)
-        smartReturnFocus()
-    }
 
     /// Only OCR and SVG finish on a dragged rect. HEX / DOM / SPX pick on
     /// mouse-up without ever completing a selection, so they land here only if
@@ -743,29 +679,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: OCR
 
     private func performPreCapturedOCR(on rect: CGRect) {
-        isCapturing = false
-        syncStateHotkeys()
-        guard let cropped = cropPreCapture(to: rect) else {
+        let cropped = cropPreCapture(to: rect)
+        if cropped == nil {
             captureLog.error("crop failed, \(self.preCapturedImages.count, privacy: .public) screenshots held")
-            ToastWindow.show("Capture failed")
-            preCapturedImages = []
-            smartReturnFocus()
-            return
         }
-        preCapturedImages = []
+        finishCapture()
+        guard let cropped else { ToastWindow.show("Capture failed"); return }
         // Recognition can take a moment; say so instead of looking dead.
         ToastWindow.show("Recognizing…")
         OCREngine.recognizeText(in: cropped) { [weak self] text in
-            guard let self else { return }
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             captureLog.notice("OCR done, \(trimmed.count, privacy: .public) chars")
             if trimmed.isEmpty { ToastWindow.show("No text found") }
-            else {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(trimmed, forType: .string)
-                ToastWindow.show("Copied")
-            }
-            self.smartReturnFocus()
+            else { self?.copyResult(trimmed, toast: "Copied") }
         }
     }
 
@@ -774,16 +700,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     #if !MAS_BUILD
     private func performSVGExtraction(on rect: CGRect) {
         let browserApp = previousApp
-        SVGExtractor.extractSVGs(in: rect, from: browserApp) { [weak self] svgs in
-            guard let self else { return }
-            self.isCapturing = false
-            self.syncStateHotkeys()
+        // Release Tab/Esc and the watchdog now: AppleScript can take seconds,
+        // and the overlay is already gone.
+        finishCapture()
+        SVGExtractor.extractSVGs(in: rect, from: browserApp) { svgs in
             if svgs.isEmpty { ToastWindow.show("No SVGs found") }
             else {
                 SVGExtractor.copyToClipboard(svgs)
                 ToastWindow.show(svgs.count == 1 ? "1 SVG copied" : "\(svgs.count) SVGs copied")
             }
-            self.smartReturnFocus()
         }
     }
     #endif
@@ -814,10 +739,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                              current: enabled.contains(currentMode) ? currentMode : (enabled.first ?? .ocr),
                              statusButton: statusItem.button)
         }
-        // Editing the enabled set invalidates any pending SPX resume — the
-        // user explicitly chose a different configuration, so the next hotkey
-        // should follow it, not jump back into SPX.
-        if !enabled.contains(.spx) { spxResumePending = false }
     }
 
     @objc private func setHighlightColor(_ sender: NSMenuItem) {
@@ -983,7 +904,7 @@ final class ModeTogglesView: NSView {
 
 extension NSColor {
     convenience init(hex: String) {
-        var hexStr = hex.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "#", with: "")
+        let hexStr = hex.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "#", with: "")
         guard hexStr.count == 6, let val = UInt64(hexStr, radix: 16) else {
             self.init(red: 1, green: 0.84, blue: 0.04, alpha: 1); return
         }

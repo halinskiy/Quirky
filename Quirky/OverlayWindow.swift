@@ -22,8 +22,6 @@ final class SelectionView: NSView {
     var onCancel: (() -> Void)?
     var onColorPicked: ((String) -> Void)?
     var onDOMElementPicked: ((String) -> Void)?
-    var onSPXSizePicked: ((String) -> Void)?
-    var onSPXHide: (() -> Void)?
     /// Heartbeat for the stuck-overlay watchdog: an overlay that stops
     /// hearing input while the user is clearly still moving the mouse is a
     /// dead overlay covering their screen.
@@ -428,8 +426,9 @@ final class SelectionView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window != nil {
-            let t = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
-                guard let self, self.hasMarchingAnts else { return }
+            let t = Timer(timeInterval: 0.05, repeats: true) { [weak self] tm in
+                guard let self else { tm.invalidate(); return }
+                guard self.hasMarchingAnts else { return }
                 self.dashPhase -= 2.0
                 self.needsDisplay = true
             }
@@ -1045,12 +1044,11 @@ final class SelectionView: NSView {
     }
 
     /// Switches the view into SPX mode and constructs the analyzer from the current backgroundImage.
-    func enableSPXMode(_ onSizePicked: @escaping (String) -> Void) {
+    func enableSPXMode() {
         isSPXMode = true
         isSVGMode = false
         isHEXMode = false
         isDOMMode = false
-        onSPXSizePicked = onSizePicked
         if let img = backgroundImage {
             spxAnalyzer = SPXAnalyzer(image: img)
         }
@@ -1060,10 +1058,6 @@ final class SelectionView: NSView {
         spxShiftHeld = false
         spxHoveredHandle = nil
         spxActiveHandle = nil
-        // NB: spxCommitted is intentionally NOT cleared here. The
-        // OverlayWindow restores prior segments via restoreSPXState(...)
-        // right after this call when the user re-enters SPX. Esc →
-        // dismiss() wipes.
         // Restore the tolerance level from UserDefaults (clamped).
         let stored = UserDefaults.standard.object(forKey: SelectionView.spxToleranceDefaultsKey) as? Int
         let n = SelectionView.spxToleranceLevels.count
@@ -1090,7 +1084,18 @@ final class SelectionView: NSView {
         spxShowCloseForIndex = nil
         spxCloseTimer?.invalidate()
         spxCloseTimer = nil
-        onSPXSizePicked = nil
+    }
+
+    /// Stops every timer the view owns. Windows are only ordered out on
+    /// dismiss, and viewDidMoveToWindow(nil) is not guaranteed to run, so
+    /// without this the 20 Hz dash timer could outlive the session.
+    func tearDown() {
+        timer?.invalidate()
+        timer = nil
+        spxSnapAnimTimer?.invalidate()
+        spxSnapAnimTimer = nil
+        spxCloseTimer?.invalidate()
+        spxCloseTimer = nil
     }
 
     // MARK: SPX helpers
@@ -1446,12 +1451,22 @@ final class SelectionView: NSView {
 
     private func popLastSPXSegment() {
         guard !spxCommitted.isEmpty else { return }
+        cancelSPXSnapAnimation()
         spxCommitted.removeLast()
         needsDisplay = true
     }
 
+    /// A running snap animation writes into spxCommitted by index; removing
+    /// a segment underneath it would make it overwrite the neighbour.
+    private func cancelSPXSnapAnimation() {
+        spxSnapAnimTimer?.invalidate()
+        spxSnapAnimTimer = nil
+        spxIsSnapAnimating = false
+    }
+
     private func deleteSPXSegment(at index: Int) {
         guard index < spxCommitted.count else { return }
+        cancelSPXSnapAnimation()
         spxCommitted.remove(at: index)
         spxHoverSegIndex = nil
         spxShowCloseForIndex = nil
@@ -1819,7 +1834,9 @@ final class SelectionView: NSView {
                 guard let ctx = CGContext(
                     data: raw.baseAddress, width: image.width, height: image.height,
                     bitsPerComponent: 8, bytesPerRow: image.width * 4,
-                    space: CGColorSpaceCreateDeviceRGB(),
+                    // Display captures are in the panel's space (P3 here);
+                    // convert to sRGB so the hex matches what CSS means.
+                    space: CGColorSpace(name: CGColorSpace.sRGB)!,
                     bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.noneSkipLast.rawValue
                 ) else { return false }
                 ctx.draw(image, in: CGRect(x: 0, y: 0, width: CGFloat(image.width), height: CGFloat(image.height)))
@@ -1944,56 +1961,12 @@ final class OverlayWindow {
     /// watchdog can tell a live overlay from a deaf one.
     var onActivity: (() -> Void)?
 
-    // SPX state preserved across click-to-hide → re-open cycle.
-    // Wiped by dismiss() (Esc / mode switch / final pick).
-    fileprivate var spxPreservedSegments: [SelectionView.SPXSegment] = []
-    /// AppDelegate hooks this to reset its capture-state machine when the user
-    /// clicks to dismiss SPX while keeping segments alive.
-    var onSPXPreserveHide: (() -> Void)?
+    // MARK: Show
 
-    // MARK: Show methods
-
-    func showFast(screenImages: [(displayID: CGDirectDisplayID, image: CGImage)], onCancel: @escaping () -> Void) {
+    /// Puts up the frozen-screen overlay. The mode is applied separately by
+    /// the switchTo*Mode methods, the same ones used for mid-session switches.
+    func show(screenImages: [(displayID: CGDirectDisplayID, image: CGImage)], onCancel: @escaping () -> Void) {
         showOverlay(isSVG: false, screenImages: screenImages, onCancel: onCancel)
-        preScanWordBoxes(level: .fast, screenImages: screenImages)
-    }
-
-    func showForSVG(screenImages: [(displayID: CGDirectDisplayID, image: CGImage)], onCancel: @escaping () -> Void) {
-        showOverlay(isSVG: true, screenImages: screenImages, onCancel: onCancel)
-    }
-
-    func showForHEX(screenImages: [(displayID: CGDirectDisplayID, image: CGImage)], onColorPicked: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
-        showOverlay(isSVG: false, screenImages: screenImages, onCancel: onCancel)
-        let handler = wrappedColorPicked(onColorPicked)
-        for window in windows {
-            if let view = window.contentView as? SelectionView {
-                view.isHEXMode = true
-                view.onColorPicked = handler
-            }
-        }
-    }
-
-    func showForDOM(screenImages: [(displayID: CGDirectDisplayID, image: CGImage)], onElementPicked: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
-        showOverlay(isSVG: false, screenImages: screenImages, onCancel: onCancel)
-        let handler = wrappedDOMElementPicked(onElementPicked)
-        for window in windows {
-            if let view = window.contentView as? SelectionView {
-                view.isDOMMode = true
-                view.onDOMElementPicked = handler
-            }
-        }
-    }
-
-    func showForSPX(screenImages: [(displayID: CGDirectDisplayID, image: CGImage)], onSizePicked: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
-        showOverlay(isSVG: false, screenImages: screenImages, onCancel: onCancel)
-        let handler = wrappedSPXSizePicked(onSizePicked)
-        for window in windows {
-            if let view = window.contentView as? SelectionView {
-                view.enableSPXMode(handler)
-                view.onSPXHide = { [weak self] in self?.hidePreservingSPX() }
-                restoreSPXState(into: view)
-            }
-        }
     }
 
     // MARK: Mode switching (mid-capture)
@@ -2056,9 +2029,8 @@ final class OverlayWindow {
         }
     }
 
-    func switchToSPXMode(onSizePicked: @escaping (String) -> Void) {
+    func switchToSPXMode() {
         forceInteractive()
-        let handler = wrappedSPXSizePicked(onSizePicked)
         for window in windows {
             guard let view = window.contentView as? SelectionView else { continue }
             view.isSVGMode = false
@@ -2066,9 +2038,7 @@ final class OverlayWindow {
             view.isDOMMode = false
             view.onColorPicked = nil
             view.onDOMElementPicked = nil
-            view.enableSPXMode(handler)
-            view.onSPXHide = { [weak self] in self?.hidePreservingSPX() }
-            restoreSPXState(into: view)
+            view.enableSPXMode()
         }
     }
 
@@ -2159,25 +2129,6 @@ final class OverlayWindow {
         return screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
     }
 
-    func hidePreservingSPX() {
-        if let view = windows.first?.contentView as? SelectionView, view.isSPXMode {
-            spxPreservedSegments = view.spxCommitted
-        }
-        isGhost = false
-        for window in windows { window.orderOut(nil) }
-        NSCursor.arrow.set()
-        windows.removeAll()
-        onSPXPreserveHide?()
-    }
-
-    /// Restore preserved SPX segments into a freshly-shown view. No-op when no
-    /// segments are stashed (first SPX entry / after Esc).
-    fileprivate func restoreSPXState(into view: SelectionView) {
-        guard !spxPreservedSegments.isEmpty else { return }
-        view.spxCommitted = spxPreservedSegments
-        view.needsDisplay = true
-    }
-
     private func wrappedColorPicked(_ onColorPicked: @escaping (String) -> Void) -> (String) -> Void {
         return { [weak self] hex in
             self?.dismiss()
@@ -2189,13 +2140,6 @@ final class OverlayWindow {
         return { [weak self] label in
             self?.dismiss()
             onElementPicked(label)
-        }
-    }
-
-    private func wrappedSPXSizePicked(_ onSizePicked: @escaping (String) -> Void) -> (String) -> Void {
-        return { [weak self] label in
-            self?.dismiss()
-            onSizePicked(label)
         }
     }
 
@@ -2275,10 +2219,8 @@ final class OverlayWindow {
         isGhost = false
         for window in windows { window.orderOut(nil) }
         NSCursor.arrow.set()
+        for window in windows { (window.contentView as? SelectionView)?.tearDown() }
         windows.removeAll()
-        // Explicit dismiss (Esc, final pick, mode switch) wipes preserved SPX
-        // state — only click-hide via hidePreservingSPX preserves it.
-        spxPreservedSegments.removeAll()
     }
 
     // MARK: Private
@@ -2290,7 +2232,10 @@ final class OverlayWindow {
         // (state desync, a path that skipped dismiss), showing another set on
         // top would bury them: invisible, unreachable, still swallowing the
         // screen. Tear down whatever is there first.
-        for window in windows { window.orderOut(nil) }
+        for window in windows {
+            window.orderOut(nil)
+            (window.contentView as? SelectionView)?.tearDown()
+        }
         windows.removeAll()
         self.cancellation = onCancel
         let imageByDisplay = Dictionary(uniqueKeysWithValues: screenImages.map { ($0.displayID, $0.image) })

@@ -23,6 +23,12 @@ GPU, HUD рисуется в прозрачный подслой `hudLayer` че
 Замер на M3 Pro 3024×1964 (стенд из реального `OverlayWindow.swift`): кадр на CPU 0,3–2 мс и до,
 и после; WindowServer ~40–50% в обоих случаях. То есть это гигиена, а не лечение заметного лага.
 
+## Сессия захвата
+
+`startCapture()` → `overlay.show()` → `switchActiveCaptureMode(currentMode)`; тот же метод переключает режимы на ходу.
+Каждая сессия получает номер `captureSession`. Любой конец сессии идёт через `finishCapture()`
+(скриншоты, хоткеи, watchdog, фокус). Результат копируется через `copyResult()`.
+
 ## Логирование
 
 `captureLog` (`Logger`, subsystem `com.threempq.quirky`, category `capture`): старт захвата (режим, активен ли Quirky),

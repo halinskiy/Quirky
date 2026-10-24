@@ -49,7 +49,7 @@ final class SVGExtractor {
 
         let source = appleScript(browser: browser, js: js)
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        appleScriptQueue.async {
             let boxes = runBoxes(source)
             DispatchQueue.main.async { completion(boxes) }
         }
@@ -64,7 +64,7 @@ final class SVGExtractor {
         let js = buildJavaScript(for: screenRect)
         let source = appleScript(browser: browser, js: js)
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        appleScriptQueue.async {
             let svgs = run(source)
             DispatchQueue.main.async { completion(svgs) }
         }

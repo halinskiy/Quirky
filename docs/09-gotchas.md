@@ -28,3 +28,12 @@
 ## OCR молча не копирует (24.10.2026)
 Две причины подряд. Первый клик по оверлею уходил на активацию окна (Quirky не становится активным по хоткею на новых macOS), поэтому `SelectionView.acceptsFirstMouse` = true, не убирать. Модель Vision `.accurate` macOS выгружает в простое, и холодная загрузка под нагрузкой занимает 30–70 с; `OCREngine.keepWarm()` держит её загруженной. `.fast` не читает кириллицу («HoBblk1» вместо «Новый»), поэтому быстрый режим только запасной.
 Диагностика: `/usr/bin/log show --last 10m --predicate 'subsystem == "com.threempq.quirky"'`.
+
+## Асинхронные результаты и сессии (24.10.2026)
+Всё, что приходит позже (Vision, AppleScript), обязано проверять `isCurrent(session, in:)` и не трогать фокус/поповер: `finishCapture()` возвращает фокус сразу. Иначе поздний результат старой сессии вызывает `previousApp.activate()`, Quirky теряет активность и `handleAppResignedActive` закрывает уже новую сессию.
+
+## Известное, не исправлено
+- Выход из SPX ghost через Tab/чип оставляет кадр начала сессии (OCR читает экран, которого уже нет). Правильно: вести через `refreshBackground`, как `leaveSPXGhost`.
+- `refreshBackground` (60 мс) не проверяет номер сессии: Esc в это окно может вернуть Quirky фокус.
+- Несколько дисплеев: H/V/T/Backspace в SPX идут в одно окно, а не в окно под курсором.
+- `CGDisplayCreateImage` помечен unavailable в SDK macOS 27 (компилируется только из-за target 13.0). При поднятии target переходить на `SCScreenshotManager` (macOS 14+).

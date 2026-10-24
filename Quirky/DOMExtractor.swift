@@ -6,6 +6,10 @@
 import Cocoa
 import ApplicationServices
 
+/// NSAppleScript is not thread-safe. Every browser script (DOM and SVG) runs
+/// on this one serial queue so a quick selection can't race a box scan.
+let appleScriptQueue = DispatchQueue(label: "com.threempq.quirky.applescript", qos: .userInitiated)
+
 final class DOMExtractor {
 
     struct Element {
@@ -58,7 +62,7 @@ final class DOMExtractor {
         let source = appleScript(browser: browser, js: js)
         let contentFrame = browserContentFrame(of: app)
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        appleScriptQueue.async {
             let viewportRects = runViewportRects(source)
             let elements: [Element]
             if let cf = contentFrame {

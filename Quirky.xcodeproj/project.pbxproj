@@ -10,7 +10,6 @@
 		AA0000000000000000000001 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000001 /* main.swift */; };
 		AA0000000000000000000002 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000002 /* AppDelegate.swift */; };
 		AA0000000000000000000003 /* OverlayWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000003 /* OverlayWindow.swift */; };
-		AA0000000000000000000004 /* ScreenCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000004 /* ScreenCapture.swift */; };
 		AA0000000000000000000005 /* OCREngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000005 /* OCREngine.swift */; };
 		AA0000000000000000000008 /* PermissionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000008 /* PermissionManager.swift */; };
 		AA0000000000000000000009 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000009 /* Assets.xcassets */; };
@@ -27,7 +26,6 @@
 		BB0000000000000000000001 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		BB0000000000000000000002 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		BB0000000000000000000003 /* OverlayWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverlayWindow.swift; sourceTree = "<group>"; };
-		BB0000000000000000000004 /* ScreenCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenCapture.swift; sourceTree = "<group>"; };
 		BB0000000000000000000005 /* OCREngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OCREngine.swift; sourceTree = "<group>"; };
 		BB0000000000000000000008 /* PermissionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionManager.swift; sourceTree = "<group>"; };
 		BB0000000000000000000009 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -70,7 +68,6 @@
 				BB0000000000000000000001 /* main.swift */,
 				BB0000000000000000000002 /* AppDelegate.swift */,
 				BB0000000000000000000003 /* OverlayWindow.swift */,
-				BB0000000000000000000004 /* ScreenCapture.swift */,
 				BB0000000000000000000005 /* OCREngine.swift */,
 				BB0000000000000000000008 /* PermissionManager.swift */,
 				BB0000000000000000000011 /* ToastWindow.swift */,
@@ -191,7 +188,6 @@
 				AA0000000000000000000001 /* main.swift in Sources */,
 				AA0000000000000000000002 /* AppDelegate.swift in Sources */,
 				AA0000000000000000000003 /* OverlayWindow.swift in Sources */,
-				AA0000000000000000000004 /* ScreenCapture.swift in Sources */,
 				AA0000000000000000000005 /* OCREngine.swift in Sources */,
 				AA0000000000000000000008 /* PermissionManager.swift in Sources */,
 				AA0000000000000000000011 /* ToastWindow.swift in Sources */,

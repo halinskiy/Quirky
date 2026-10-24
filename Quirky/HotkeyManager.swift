@@ -16,7 +16,7 @@ final class HotkeyManager {
     enum HotkeyID: UInt32 {
         case capture = 1   // ⌘⇧1 — always registered while the app runs
         case tab = 2       // Tab — registered only during capture w/ ≥2 modes
-        case escape = 3    // Esc — registered only while SPX is the active mode
+        case escape = 3    // Esc — registered for the whole capture session
         case shiftTab = 4  // ⇧Tab — same window as Tab, cycles the other way
     }
 
@@ -75,9 +75,9 @@ final class HotkeyManager {
         }
     }
 
-    /// Esc dismisses SPX ghost overlay; only register while SPX is the
-    /// active capture mode. Otherwise the OverlayWindow itself catches
-    /// Esc via its keyDown handler (it's the key window in opaque modes).
+    /// Esc is registered for the whole capture session, not just SPX: the
+    /// overlay's own keyDown only works while it is key, and a session that
+    /// lost focus must still be escapable.
     func setEscapeHotkeyActive(_ active: Bool) {
         if active {
             guard escRef == nil else { return }
