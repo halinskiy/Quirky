@@ -66,3 +66,7 @@ Swift, AppKit, Vision framework, CoreGraphics, ScreenCaptureKit, Sparkle for aut
 ## License
 
 MIT
+
+## Docs
+
+Developer notes live in [`docs/`](docs/) and [`CHANGELOG.md`](CHANGELOG.md).

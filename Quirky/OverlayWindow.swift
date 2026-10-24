@@ -8,6 +8,12 @@ struct DOMElementBox {
 
 // MARK: - Selection View
 
+private final class HUDLayerDelegate: NSObject, CALayerDelegate {
+    weak var view: SelectionView?
+    func draw(_ layer: CALayer, in ctx: CGContext) { view?.drawHUD(in: ctx) }
+    func action(for layer: CALayer, forKey event: String) -> CAAction? { NSNull() }
+}
+
 final class SelectionView: NSView {
     var onComplete: ((CGRect) -> Void)?
     var onCancel: (() -> Void)?
@@ -25,6 +31,8 @@ final class SelectionView: NSView {
     var isSPXMode = false
     var backgroundImage: CGImage? {
         didSet {
+            pixelCache = nil
+            needsDisplay = true
             if let img = backgroundImage, isSPXMode {
                 spxAnalyzer = SPXAnalyzer(image: img)
                 applySPXToleranceToAnalyzer()
@@ -418,8 +426,9 @@ final class SelectionView: NSView {
         super.viewDidMoveToWindow()
         if window != nil {
             let t = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
-                self?.dashPhase -= 2.0
-                self?.needsDisplay = true
+                guard let self, self.hasMarchingAnts else { return }
+                self.dashPhase -= 2.0
+                self.needsDisplay = true
             }
             // .common includes .eventTracking — otherwise the timer freezes
             // during mouse drags and AppKit's shielding-window tracking loops.
@@ -429,6 +438,15 @@ final class SelectionView: NSView {
             timer?.invalidate()
             timer = nil
         }
+    }
+
+    /// Only the OCR/SVG hover box, the boxes inside a selection and the DOM
+    /// highlight are dashed. Ticking a full redraw when none is on screen was
+    /// pure waste, 20 times a second for the whole session.
+    private var hasMarchingAnts: Bool {
+        if isHEXMode || isSPXMode { return false }
+        if isDOMMode { return hoveredDOMElement != nil }
+        return hoveredBox != nil || isDragging
     }
 
     override func updateTrackingAreas() {
@@ -744,23 +762,54 @@ final class SelectionView: NSView {
 
     // MARK: Drawing
 
-    override func draw(_ dirtyRect: NSRect) {
-        guard let context = NSGraphicsContext.current?.cgContext else { return }
+    // The screenshot rides as the view layer's contents, composited by the
+    // GPU and never redrawn; the HUD draws into a transparent sublayer on top.
+    // Painting the full Retina screenshot through draw(_:) on every mouse move
+    // and every marching-ants tick is what made the overlay lag.
+    private let hudLayer = CALayer()
+    private let hudDelegate = HUDLayerDelegate()
 
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
+        hudDelegate.view = self
+        hudLayer.delegate = hudDelegate
+        hudLayer.needsDisplayOnBoundsChange = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        guard let layer else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         // In SPX ghost mode, skip the screenshot so the user sees the live
         // underlying screen with markings floating on top.
         let skipBackground = isSPXMode && spxIsGhost
-        if !skipBackground {
-            if let bg = backgroundImage {
-                NSImage(cgImage: bg, size: bounds.size).draw(in: bounds)
-            } else {
-                // Window is non-opaque (needed for ghost). If the screenshot
-                // hasn't arrived yet, fill with black so the borderless window
-                // still receives mouse clicks instead of passing them through.
-                context.setFillColor(NSColor.black.cgColor)
-                context.fill(bounds)
-            }
-        }
+        layer.contents = skipBackground ? nil : backgroundImage
+        layer.contentsGravity = .resize
+        // Window is non-opaque (needed for ghost). If the screenshot hasn't
+        // arrived yet, fill with black so the borderless window still
+        // receives mouse clicks instead of passing them through.
+        layer.backgroundColor = (skipBackground || backgroundImage != nil) ? nil : NSColor.black.cgColor
+        if hudLayer.superlayer !== layer { layer.addSublayer(hudLayer) }
+        hudLayer.frame = layer.bounds
+        hudLayer.contentsScale = window?.backingScaleFactor ?? layer.contentsScale
+        hudLayer.setNeedsDisplay()
+        CATransaction.commit()
+    }
+
+    fileprivate func drawHUD(in context: CGContext) {
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        drawOverlay(context: context)
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    private func drawOverlay(context: CGContext) {
 
         if isHEXMode {
             drawHEXHUD(context: context)
@@ -1734,6 +1783,10 @@ final class SelectionView: NSView {
 
     // MARK: Color helpers
 
+    /// The screenshot decoded once into RGBA. Sampling used to re-render the
+    /// whole Retina image into a 1×1 context on every mouse move.
+    private var pixelCache: [UInt8]?
+
     private func sampleColor(at viewPoint: NSPoint) -> NSColor? {
         guard let image = backgroundImage else { return nil }
         let scaleX = CGFloat(image.width) / bounds.width
@@ -1742,16 +1795,24 @@ final class SelectionView: NSView {
         let py = Int((bounds.height - viewPoint.y) * scaleY) // NSView Y-flip → CGImage top-left
         guard px >= 0, py >= 0, px < image.width, py < image.height else { return nil }
 
-        var pixel = [UInt8](repeating: 0, count: 4)
-        guard let ctx = CGContext(
-            data: &pixel, width: 1, height: 1,
-            bitsPerComponent: 8, bytesPerRow: 4,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.noneSkipLast.rawValue
-        ) else { return nil }
-        ctx.translateBy(x: -CGFloat(px), y: -(CGFloat(image.height) - CGFloat(py) - 1))
-        ctx.draw(image, in: CGRect(x: 0, y: 0, width: CGFloat(image.width), height: CGFloat(image.height)))
-        return NSColor(srgbRed: CGFloat(pixel[0]) / 255, green: CGFloat(pixel[1]) / 255, blue: CGFloat(pixel[2]) / 255, alpha: 1)
+        if pixelCache == nil {
+            var buffer = [UInt8](repeating: 0, count: image.width * image.height * 4)
+            let drawn = buffer.withUnsafeMutableBytes { raw -> Bool in
+                guard let ctx = CGContext(
+                    data: raw.baseAddress, width: image.width, height: image.height,
+                    bitsPerComponent: 8, bytesPerRow: image.width * 4,
+                    space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.noneSkipLast.rawValue
+                ) else { return false }
+                ctx.draw(image, in: CGRect(x: 0, y: 0, width: CGFloat(image.width), height: CGFloat(image.height)))
+                return true
+            }
+            guard drawn else { return nil }
+            pixelCache = buffer
+        }
+        guard let pixels = pixelCache else { return nil }
+        let i = (py * image.width + px) * 4   // bitmap rows run top-down
+        return NSColor(srgbRed: CGFloat(pixels[i]) / 255, green: CGFloat(pixels[i + 1]) / 255, blue: CGFloat(pixels[i + 2]) / 255, alpha: 1)
     }
 
     private func hexString(for color: NSColor?) -> String {
