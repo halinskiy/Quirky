@@ -36,8 +36,19 @@ Enable the modes you use in the settings menu (right-click the menu-bar icon). P
 2. Open the disk image and drag **Quirky.app** into **Applications**
 3. Launch and grant the required permissions:
    - **Screen Recording** — for capture across every mode
-   - **Accessibility** — for the global hotkey
    - **Automation** — for SVG and DOM extraction from browsers (prompted on first use)
+
+The global hotkey uses Carbon hotkey registration and needs no Accessibility permission.
+
+### Mac App Store edition
+
+A sandboxed edition (OCR, HEX and SPX; no DOM/SVG, which need Apple Events, and no Sparkle) is built from the `MAS Release` configuration and published as **Quirky Screen Capture**. It is free. See [`docs/04-release.md`](docs/04-release.md).
+
+## Troubleshooting
+
+- **OCR shows "Recognizing…" for a long time.** Vision loads its text model lazily and macOS evicts it when idle; a cold load on a busy Mac can take tens of seconds. Quirky keeps the model warm (at launch, every 4 minutes and on <kbd>⌘⇧1</kbd>), so this should only happen right after login. Paste after the "Copied" toast.
+- **The capture shows only the wallpaper or a black screen.** Screen Recording permission is missing or stale: toggle Quirky off and on in System Settings → Privacy & Security → Screen Recording, then relaunch.
+- **Diagnostics.** Every capture step is logged: `/usr/bin/log show --last 10m --predicate 'subsystem == "com.threempq.quirky"'`.
 
 Quirky is signed with a Developer ID Application certificate and notarized by Apple — no quarantine bypass or `xattr` removal needed. A `.zip` of the bundle is also published alongside the DMG for Sparkle auto-updates.
 
@@ -51,7 +62,7 @@ xcodebuild -scheme Quirky -configuration Release build
 
 The built app will be in `~/Library/Developer/Xcode/DerivedData/Quirky-*/Build/Products/Release/`.
 
-To produce a signed + notarized release `.zip`, see `Scripts/notarize.sh` (requires Developer ID Application identity in your login keychain and a `Quirky` notarytool keychain profile — see `Scripts/notarize.sh` header for setup).
+To produce a signed + notarized release `.zip`, see `Scripts/notarize.sh` (requires Developer ID Application identity in your login keychain and a notarytool keychain profile (`Corder` by default, `NOTARY_PROFILE` overrides) — see `Scripts/notarize.sh` header for setup).
 
 ## Requirements
 
@@ -61,7 +72,7 @@ To produce a signed + notarized release `.zip`, see `Scripts/notarize.sh` (requi
 
 ## Tech stack
 
-Swift, AppKit, Vision framework, CoreGraphics, ScreenCaptureKit, Sparkle for auto-updates. No SwiftUI, no Storyboards.
+Swift, AppKit, Vision framework, CoreGraphics, ScreenCaptureKit (permission check), Sparkle for auto-updates (direct build only). No SwiftUI, no Storyboards.
 
 ## License
 

@@ -22,3 +22,6 @@ xcuserdata/
 # Debug logs
 *.log
 build_output*.txt
+
+# Python
+__pycache__/

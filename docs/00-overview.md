@@ -15,5 +15,6 @@ Quirky живёт в меню-баре. ⌘⇧1 замораживает экр�
 Esc выходит всегда, ⌘⇧1 в SPX включает ghost (экран живой, разметка поверх).
 
 - Репо: `halinskiy/Quirky`, локально `~/quirky`.
-- Текущая выпущенная версия: см. `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` в проекте и `appcast.xml`.
+- Версии (24.10.2026): через Sparkle выпущена 1.1.2 (build 8); 1.1.3 (build 9) собрана и стоит локально, в appcast ещё не выложена.
+- Mac App Store: «Quirky Screen Capture», app id 6773094144, бесплатно. Загружена сборка 9 без фиксов OCR от 24.10, перед ревью перезалить новой. Метаданные и скриншоты заполнены; ждёт, пока Костя опубликует анкету App Privacy («Data Not Collected»), потом отправка на ревью.
 - Архитектура: [01-architecture.md](01-architecture.md).
