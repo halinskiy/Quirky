@@ -27,6 +27,8 @@
 
 ## OCR молча не копирует (24.10.2026)
 Две причины подряд. Первый клик по оверлею уходил на активацию окна (Quirky не становится активным по хоткею на новых macOS), поэтому `SelectionView.acceptsFirstMouse` = true, не убирать. Модель Vision `.accurate` macOS выгружает в простое, и холодная загрузка под нагрузкой занимает 30–70 с; `OCREngine.keepWarm()` держит её загруженной. `.fast` не читает кириллицу («HoBblk1» вместо «Новый»), поэтому быстрый режим только запасной.
+
+25.10.2026: Neural Engine в процессе, прожившем несколько часов, начал падать с `e5rtError(... precompiled_compute_operation ..., 13)` на каждом запросе до перезапуска. `OCREngine` при ошибке переходит на GPU, потом CPU (`setComputeDevice`, macOS 14+) и остаётся там. В логе это строка «OCR switching to gpu».
 Диагностика: `/usr/bin/log show --last 10m --predicate 'subsystem == "com.threempq.quirky"'`.
 
 ## Асинхронные результаты и сессии (24.10.2026)
