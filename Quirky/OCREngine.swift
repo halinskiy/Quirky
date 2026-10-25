@@ -29,12 +29,11 @@ final class OCREngine {
     }
 
     /// Vision loads its accurate text model lazily, and on a busy Mac the first
-    /// request has taken 30–70 s. Load it ahead of the capture instead.
+    /// request has taken 30–70 s. Load it ahead of the capture instead. The
+    /// image has to contain real text: on a blank one the detector finds
+    /// nothing and the recognizer, the slow part, is never loaded at all.
     static func warmUp() {
-        guard let ctx = CGContext(data: nil, width: 64, height: 32, bitsPerComponent: 8, bytesPerRow: 0,
-                                  space: CGColorSpaceCreateDeviceRGB(),
-                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue),
-              let image = ctx.makeImage() else { return }
+        guard let image = warmUpImage else { return }
         queue.async {
             let start = Date()
             _ = recognizeAccurate(image)
@@ -42,6 +41,23 @@ final class OCREngine {
             if ms > 500 { captureLog.notice("OCR warm-up took \(ms, privacy: .public) ms") }
         }
     }
+
+    private static let warmUpImage: CGImage? = {
+        let size = CGSize(width: 480, height: 64)
+        guard let ctx = CGContext(data: nil, width: Int(size.width), height: Int(size.height), bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
+        ctx.setFillColor(CGColor(gray: 1, alpha: 1))
+        ctx.fill(CGRect(origin: .zero, size: size))
+        // Named CTFont, not a system-font lookup: see the macOS 26 CoreText note in the HUD code.
+        let font = CTFontCreateWithName("Helvetica" as CFString, 28, nil)
+        let attrs = [kCTFontAttributeName: font,
+                     kCTForegroundColorAttributeName: CGColor(gray: 0, alpha: 1)] as CFDictionary
+        let line = CTLineCreateWithAttributedString(CFAttributedStringCreate(nil, "Прогрев Quirky 2026" as CFString, attrs))
+        ctx.textPosition = CGPoint(x: 16, y: 20)
+        CTLineDraw(line, ctx)
+        return ctx.makeImage()
+    }()
 
     static func recognizeText(in image: CGImage, completion: @escaping (String) -> Void) {
         queue.async {
