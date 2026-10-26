@@ -450,6 +450,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // should land when they finish measuring, not the app they started from.
         let front = NSWorkspace.shared.frontmostApplication
         if front?.bundleIdentifier != Bundle.main.bundleIdentifier { previousApp = front }
+        #if !MAS_BUILD
+        // Last used DOM/SVG but not in a browser now: open in OCR instead.
+        if currentMode == .dom || currentMode == .svg,
+           BrowserAutomation.detectBrowser(bundleID: previousApp?.bundleIdentifier) == nil,
+           EnabledModesStore.load().contains(.ocr) {
+            currentMode = .ocr
+            OCREngine.warmUp()
+        }
+        #endif
 
         overlay.refreshBackground(capture: { [weak self] in
             guard let self else { return [] }
@@ -583,6 +592,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // keep whatever app was in front before so focus returns there.
         let front = NSWorkspace.shared.frontmostApplication
         if front?.bundleIdentifier != Bundle.main.bundleIdentifier { previousApp = front }
+        #if !MAS_BUILD
+        // Last used DOM/SVG but not in a browser now: open in OCR instead.
+        if currentMode == .dom || currentMode == .svg,
+           BrowserAutomation.detectBrowser(bundleID: previousApp?.bundleIdentifier) == nil,
+           EnabledModesStore.load().contains(.ocr) {
+            currentMode = .ocr
+            OCREngine.warmUp()
+        }
+        #endif
         syncStateHotkeys()
         showModePopover()
 
@@ -706,8 +724,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func skipBrowserMode(_ mode: CaptureMode, message: String?, skipBrowserModes: Bool = false) {
         if let message { ToastWindow.show(message, style: .error) }
         var next = nextEnabledMode(after: mode, step: cycleDirection)
-        // Not a browser: the user wants text off the screen, which is OCR.
-        if skipBrowserModes, EnabledModesStore.load().contains(.ocr) { next = .ocr }
         // Not a browser: SVG would fail the same way, go straight past it.
         var hops = 0
         while skipBrowserModes, let n = next, n == .dom || n == .svg, hops < CaptureMode.allCases.count {
