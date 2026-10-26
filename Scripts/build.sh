@@ -100,7 +100,6 @@ if [ -d "$SPARKLE" ]; then
             codesign "${SIGN_OPTS[@]}" "$target"
         fi
     done
-
 fi
 
 # Info.plist may have changed above, even if no Sparkle framework was embedded.

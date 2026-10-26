@@ -537,21 +537,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let session = captureSession
             DOMExtractor.getDOMElements(from: previousApp) { [weak self] result in
                 guard let self, self.isCurrent(session, in: .dom) else { return }
-                guard case .success(let elements) = result else {
-                    if case .failure(let error) = result { self.failBrowserCapture(error) }
-                    return
+                switch result {
+                case .failure(let error): self.skipBrowserMode(.dom, error: error)
+                case .success(let elements) where elements.isEmpty:
+                    self.skipBrowserMode(.dom, message: "На странице не найдено DOM-элементов")
+                case .success(let elements): self.overlay.setDOMElements(elements)
                 }
-                if elements.isEmpty {
-                    ToastWindow.show("На странице не найдено DOM-элементов", style: .error)
-                    if let next = self.nextEnabledMode(after: .dom, step: self.cycleDirection) {
-                        self.switchActiveCaptureMode(to: next)
-                    } else {
-                        self.cancelCapture()
-                        self.overlay.dismiss()
-                    }
-                    return
-                }
-                self.overlay.setDOMElements(elements)
             }
         case .svg:
             overlay.switchToSVGMode()
@@ -560,7 +551,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self, self.isCurrent(session, in: .svg) else { return }
                 switch result {
                 case .success(let boxes): self.overlay.setSVGBoxes(boxes)
-                case .failure(let error): self.failBrowserCapture(error)
+                case .failure(let error): self.skipBrowserMode(.svg, error: error)
                 }
             }
         #endif
@@ -705,10 +696,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: SVG
 
     #if !MAS_BUILD
-    private func failBrowserCapture(_ error: BrowserAutomationFailure) {
-        cancelCapture()
-        overlay.dismiss()
-        ToastWindow.show(error.userMessage, style: .error)
+    /// DOM/SVG can't run here: outside a browser move on silently to the next
+    /// mode (usually OCR); in a browser that refused, say why and move on too.
+    private func skipBrowserMode(_ mode: CaptureMode, error: BrowserAutomationFailure) {
+        skipBrowserMode(mode, message: error.kind == .unsupportedBrowser ? nil : error.userMessage,
+                        skipBrowserModes: error.kind == .unsupportedBrowser)
+    }
+
+    private func skipBrowserMode(_ mode: CaptureMode, message: String?, skipBrowserModes: Bool = false) {
+        if let message { ToastWindow.show(message, style: .error) }
+        var next = nextEnabledMode(after: mode, step: cycleDirection)
+        // Not a browser: the user wants text off the screen, which is OCR.
+        if skipBrowserModes, EnabledModesStore.load().contains(.ocr) { next = .ocr }
+        // Not a browser: SVG would fail the same way, go straight past it.
+        var hops = 0
+        while skipBrowserModes, let n = next, n == .dom || n == .svg, hops < CaptureMode.allCases.count {
+            next = nextEnabledMode(after: n, step: cycleDirection); hops += 1
+        }
+        if skipBrowserModes, next == .dom || next == .svg { next = nil }
+        if let next {
+            switchActiveCaptureMode(to: next)
+        } else {
+            cancelCapture()
+            overlay.dismiss()
+        }
     }
 
     private func performSVGExtraction(on rect: CGRect) {
@@ -720,7 +731,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         SVGExtractor.extractSVGs(in: rect, from: browserApp) { [weak self] result in
             guard let self, self.captureSession == session, self.currentMode == .svg, !self.isCapturing else { return }
             switch result {
-            case .failure(let error): ToastWindow.show(error.userMessage, style: .error)
+            case .failure(let error): ToastWindow.show(error.userMessage(forBrowserBundleID: browserApp?.bundleIdentifier), style: .error)
             case .success(let svgs):
                 if svgs.isEmpty { ToastWindow.show("No SVGs found") }
                 else {

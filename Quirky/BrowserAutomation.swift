@@ -30,6 +30,13 @@ struct BrowserAutomationFailure: Error {
         self.init(kind: kind, appleScriptCode: code)
     }
 
+    func userMessage(forBrowserBundleID bundleID: String?) -> String {
+        if kind == .javaScriptDisabled, bundleID?.lowercased() == "com.apple.safari" {
+            return "Включите Allow JavaScript from Apple Events в меню Develop или настройках разработчика Safari"
+        }
+        return userMessage
+    }
+
     var userMessage: String {
         switch kind {
         case .unsupportedBrowser: return "Откройте страницу в поддерживаемом браузере (Nothing, Chrome, Safari…)"

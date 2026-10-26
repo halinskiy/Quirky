@@ -22,6 +22,8 @@ struct BrowserAutomationTests {
         let disabled = failure(read("error \"Executing JavaScript through AppleScript is turned off.\" number 12"))
         check(disabled.kind == .javaScriptDisabled && disabled.appleScriptCode == 12, "Chromium disabled error")
         check(disabled.userMessage == "Включите в браузере View > Developer > Allow JavaScript from Apple Events", "actionable JS toast")
+        check(disabled.userMessage(forBrowserBundleID: "com.apple.Safari").contains("Safari"), "Safari-specific JS guidance")
+        check(disabled.userMessage(forBrowserBundleID: "com.3mpq.nothing") == disabled.userMessage, "Chromium guidance preserved")
         let denied = failure(read("error \"Not authorized to send Apple events\" number -1743"))
         check(denied.kind == .automationDenied && denied.userMessage.contains("Automation"), "Automation permission toast")
         check(failure(read("error \"window missing\" number -1728")).kind == .noWindow, "missing tab/window")
