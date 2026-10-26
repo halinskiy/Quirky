@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AA0000000000000000000021 /* BrowserAutomation.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000021 /* BrowserAutomation.swift */; };
 		AA0000000000000000000001 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000001 /* main.swift */; };
 		AA0000000000000000000002 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000002 /* AppDelegate.swift */; };
 		AA0000000000000000000003 /* OverlayWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000003 /* OverlayWindow.swift */; };
@@ -23,6 +24,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		BB0000000000000000000021 /* BrowserAutomation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserAutomation.swift; sourceTree = "<group>"; };
 		BB0000000000000000000001 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		BB0000000000000000000002 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		BB0000000000000000000003 /* OverlayWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverlayWindow.swift; sourceTree = "<group>"; };
@@ -73,6 +75,7 @@
 				BB0000000000000000000011 /* ToastWindow.swift */,
 				BB0000000000000000000012 /* SVGExtractor.swift */,
 				BB0000000000000000000014 /* DOMExtractor.swift */,
+				BB0000000000000000000021 /* BrowserAutomation.swift */,
 				BB0000000000000000000015 /* SPXAnalyzer.swift */,
 				BB0000000000000000000016 /* ModePopover.swift */,
 				BB0000000000000000000017 /* HotkeyManager.swift */,
@@ -193,6 +196,7 @@
 				AA0000000000000000000011 /* ToastWindow.swift in Sources */,
 				AA0000000000000000000012 /* SVGExtractor.swift in Sources */,
 				AA0000000000000000000014 /* DOMExtractor.swift in Sources */,
+				AA0000000000000000000021 /* BrowserAutomation.swift in Sources */,
 				AA0000000000000000000015 /* SPXAnalyzer.swift in Sources */,
 				AA0000000000000000000016 /* ModePopover.swift in Sources */,
 				AA0000000000000000000017 /* HotkeyManager.swift in Sources */,

@@ -535,10 +535,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.handleDOMElementPicked(label)
             }
             let session = captureSession
-            DOMExtractor.getDOMElements(from: previousApp) { [weak self] elements in
+            DOMExtractor.getDOMElements(from: previousApp) { [weak self] result in
                 guard let self, self.isCurrent(session, in: .dom) else { return }
+                guard case .success(let elements) = result else {
+                    if case .failure(let error) = result { self.failBrowserCapture(error) }
+                    return
+                }
                 if elements.isEmpty {
-                    ToastWindow.show("Open in Safari/Chrome", style: .error)
+                    ToastWindow.show("На странице не найдено DOM-элементов", style: .error)
                     if let next = self.nextEnabledMode(after: .dom, step: self.cycleDirection) {
                         self.switchActiveCaptureMode(to: next)
                     } else {
@@ -552,9 +556,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .svg:
             overlay.switchToSVGMode()
             let session = captureSession
-            SVGExtractor.getSVGBoundingBoxes(from: previousApp) { [weak self] boxes in
+            SVGExtractor.getSVGBoundingBoxes(from: previousApp) { [weak self] result in
                 guard let self, self.isCurrent(session, in: .svg) else { return }
-                self.overlay.setSVGBoxes(boxes)
+                switch result {
+                case .success(let boxes): self.overlay.setSVGBoxes(boxes)
+                case .failure(let error): self.failBrowserCapture(error)
+                }
             }
         #endif
         case .spx:
@@ -698,16 +705,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: SVG
 
     #if !MAS_BUILD
+    private func failBrowserCapture(_ error: BrowserAutomationFailure) {
+        cancelCapture()
+        overlay.dismiss()
+        ToastWindow.show(error.userMessage, style: .error)
+    }
+
     private func performSVGExtraction(on rect: CGRect) {
         let browserApp = previousApp
+        let session = captureSession
         // Release Tab/Esc and the watchdog now: AppleScript can take seconds,
         // and the overlay is already gone.
         finishCapture()
-        SVGExtractor.extractSVGs(in: rect, from: browserApp) { svgs in
-            if svgs.isEmpty { ToastWindow.show("No SVGs found") }
-            else {
-                SVGExtractor.copyToClipboard(svgs)
-                ToastWindow.show(svgs.count == 1 ? "1 SVG copied" : "\(svgs.count) SVGs copied")
+        SVGExtractor.extractSVGs(in: rect, from: browserApp) { [weak self] result in
+            guard let self, self.captureSession == session, self.currentMode == .svg, !self.isCapturing else { return }
+            switch result {
+            case .failure(let error): ToastWindow.show(error.userMessage, style: .error)
+            case .success(let svgs):
+                if svgs.isEmpty { ToastWindow.show("No SVGs found") }
+                else {
+                    SVGExtractor.copyToClipboard(svgs)
+                    ToastWindow.show(svgs.count == 1 ? "1 SVG copied" : "\(svgs.count) SVGs copied")
+                }
             }
         }
     }

@@ -1,0 +1,25 @@
+{
+  "window_utc": {
+    "since": "2026-09-26T17:42:44.842418+00:00",
+    "until": "2026-10-26T17:42:44.842418+00:00"
+  },
+  "filters_checked": [
+    "quirky",
+    "Quirky"
+  ],
+  "n": 0,
+  "events": [],
+  "all_time_app_event_counts": {
+    "Hooli": "1977",
+    "Karakuli": "49",
+    "Metagistics Customs": "51",
+    "PTS": "5",
+    "Pult": "1148",
+    "Pult iOS": "1415",
+    "Qeepl": "9005",
+    "Voicer": "397",
+    "WGrid": "68578",
+    "nothing": "3551"
+  },
+  "note": "No Quirky app in the all-time dashboard. Counts for other apps are all-time, not 30-day. The unfiltered sample is capped at 5000."
+}
