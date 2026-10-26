@@ -19,13 +19,9 @@ final class DOMExtractor {
 
     // MARK: - Public
 
-    static func getDOMElements(from app: NSRunningApplication?, completion: @escaping (Result<[Element], BrowserAutomationFailure>) -> Void) {
-        let started = ProcessInfo.processInfo.systemUptime
-        func complete(_ result: Result<[Element], BrowserAutomationFailure>) {
-            BrowserAutomation.complete(result, operation: .domScan, app: app, started: started, completion: completion)
-        }
-        guard let app, let browser = BrowserAutomation.detectBrowser(bundleID: app.bundleIdentifier) else {
-            complete(.failure(.init(kind: .unsupportedBrowser)))
+    static func getDOMElements(from app: NSRunningApplication?, completion: @escaping ([Element]) -> Void) {
+        guard let app = app, let browser = detectBrowser(app) else {
+            DispatchQueue.main.async { completion([]) }
             return
         }
 
@@ -63,18 +59,28 @@ final class DOMExtractor {
         return JSON.stringify(R);})()
         """
 
-        let source = BrowserAutomation.appleScript(browser: browser, js: js)
+        let source = appleScript(browser: browser, js: js)
         let contentFrame = browserContentFrame(of: app)
 
         appleScriptQueue.async {
-            let result = runViewportRects(source).flatMap { viewportRects -> Result<[Element], BrowserAutomationFailure> in
-                guard let cf = contentFrame else { return .failure(.init(kind: .contentFrameUnavailable)) }
-                return .success(viewportRects.map { vr in
-                    Element(rect: CGRect(x: cf.origin.x + vr.x, y: cf.origin.y + vr.y,
-                                         width: vr.width, height: vr.height), label: vr.label)
-                })
+            let viewportRects = runViewportRects(source)
+            let elements: [Element]
+            if let cf = contentFrame {
+                elements = viewportRects.map { vr in
+                    Element(
+                        rect: CGRect(
+                            x: cf.origin.x + vr.x,
+                            y: cf.origin.y + vr.y,
+                            width: vr.width,
+                            height: vr.height
+                        ),
+                        label: vr.label
+                    )
+                }
+            } else {
+                elements = []
             }
-            complete(result)
+            DispatchQueue.main.async { completion(elements) }
         }
     }
 
@@ -125,24 +131,99 @@ final class DOMExtractor {
         return CGRect(origin: pos, size: size)
     }
 
+    // MARK: - Browser detection (mirrors SVGExtractor — independent on purpose)
+
+    private enum Browser {
+        case safari
+        case chromium(name: String)
+    }
+
+    private static func detectBrowser(_ app: NSRunningApplication?) -> Browser? {
+        guard let bid = app?.bundleIdentifier else { return nil }
+        let lower = bid.lowercased()
+        if lower == "com.apple.safari" {
+            ensureSafariJSEnabled()
+            return .safari
+        }
+        let chromiumIDs = [
+            "com.google.chrome",
+            "company.thebrowser.browser",
+            "com.brave.browser",
+            "com.microsoft.edgemac",
+            "com.vivaldi.vivaldi",
+            "com.operasoftware.opera",
+            "ai.perplexity.comet",
+            "com.3mpq.nothing",
+        ]
+        for cid in chromiumIDs where lower == cid {
+            ensureJSEnabled(bundleID: bid)
+            return .chromium(name: app?.localizedName ?? "Google Chrome")
+        }
+        if lower.contains("chrome") || lower.contains("chromium") {
+            ensureJSEnabled(bundleID: bid)
+            return .chromium(name: app?.localizedName ?? "Google Chrome")
+        }
+        return nil
+    }
+
+    private static func ensureJSEnabled(bundleID: String) {
+        let key = "AppleScriptEnabled"
+        if UserDefaults(suiteName: bundleID)?.bool(forKey: key) == true { return }
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
+        task.arguments = ["write", bundleID, key, "-bool", "true"]
+        try? task.run()
+        task.waitUntilExit()
+    }
+
+    private static func ensureSafariJSEnabled() {
+        let key = "AllowJavaScriptFromAppleEvents"
+        if UserDefaults(suiteName: "com.apple.Safari")?.bool(forKey: key) == true { return }
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
+        task.arguments = ["write", "com.apple.Safari", key, "-bool", "true"]
+        try? task.run()
+        task.waitUntilExit()
+    }
+
+    private static func appleScript(browser: Browser, js: String) -> String {
+        let escaped = js.replacingOccurrences(of: "\\", with: "\\\\")
+                        .replacingOccurrences(of: "\"", with: "\\\"")
+        switch browser {
+        case .safari:
+            return "tell application \"Safari\" to do JavaScript \"\(escaped)\" in document 1"
+        case .chromium(let name):
+            return """
+            tell application "\(name)"
+                tell active tab of front window
+                    execute javascript "\(escaped)"
+                end tell
+            end tell
+            """
+        }
+    }
+
     private struct ViewportRect {
         let x, y, width, height: CGFloat
         let label: String
     }
 
-    private static func runViewportRects(_ source: String) -> Result<[ViewportRect], BrowserAutomationFailure> {
-        BrowserAutomation.readArray(source) { data in
-            guard let arr = try JSONSerialization.jsonObject(with: data) as? [[Any]] else {
-                throw BrowserAutomationFailure(kind: .invalidResponse)
-            }
-            return try arr.map { item in
-                guard item.count == 5,
-                      let x = item[0] as? Double, let y = item[1] as? Double,
-                      let w = item[2] as? Double, let h = item[3] as? Double,
-                      [x, y, w, h].allSatisfy({ $0.isFinite }), w > 0, h > 0,
-                      let label = item[4] as? String else { throw BrowserAutomationFailure(kind: .invalidResponse) }
-                return ViewportRect(x: CGFloat(x), y: CGFloat(y), width: CGFloat(w), height: CGFloat(h), label: label)
-            }
+    private static func runViewportRects(_ source: String) -> [ViewportRect] {
+        guard let script = NSAppleScript(source: source) else { return [] }
+        var error: NSDictionary?
+        let result = script.executeAndReturnError(&error)
+        if error != nil { return [] }
+        guard let json = result.stringValue,
+              let data = json.data(using: .utf8),
+              let arr = try? JSONSerialization.jsonObject(with: data) as? [[Any]] else { return [] }
+        return arr.compactMap { item in
+            guard item.count == 5,
+                  let x = (item[0] as? Double) ?? (item[0] as? Int).map(Double.init),
+                  let y = (item[1] as? Double) ?? (item[1] as? Int).map(Double.init),
+                  let w = (item[2] as? Double) ?? (item[2] as? Int).map(Double.init),
+                  let h = (item[3] as? Double) ?? (item[3] as? Int).map(Double.init),
+                  let label = item[4] as? String else { return nil }
+            return ViewportRect(x: CGFloat(x), y: CGFloat(y), width: CGFloat(w), height: CGFloat(h), label: label)
         }
     }
 }

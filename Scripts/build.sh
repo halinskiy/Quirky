@@ -47,28 +47,6 @@ fi
 cp -R "$PRODUCT_PATH" "$OUT_DIR/$APP_NAME"
 echo "==> Built: $OUT_DIR/$APP_NAME"
 
-# Diagnostic uploads are opt-in at build time. Pass only the ingest key from the
-# local secrets environment; never embed the dashboard/read token in an app.
-# MAS must remain offline and carry neither telemetry configuration nor secrets.
-export QUIRKY_BUILT_APP="$OUT_DIR/$APP_NAME"
-export QUIRKY_BUILD_CONFIG="$BUILD_CONFIG"
-python3 - <<'PYCONFIG'
-import os, plistlib
-from pathlib import Path
-path = Path(os.environ["QUIRKY_BUILT_APP"]) / "Contents/Info.plist"
-with path.open("rb") as f:
-    info = plistlib.load(f)
-for field in ("TelemetryEndpoint", "TelemetryKey"):
-    info.pop(field, None)
-key = os.environ.get("APPS_TELEMETRY_INGEST_KEY", "")
-if os.environ["QUIRKY_BUILD_CONFIG"] != "MAS Release" and key:
-    info["TelemetryEndpoint"] = "https://apps-telemetry.empqwork.workers.dev/e"
-    info["TelemetryKey"] = key
-with path.open("wb") as f:
-    plistlib.dump(info, f)
-print("==> Browser diagnostics:", "configured" if "TelemetryKey" in info else "local only (MAS: excluded)")
-PYCONFIG
-
 # Strip quarantine (only matters if you signed locally without notarization yet).
 xattr -dr com.apple.quarantine "$OUT_DIR/$APP_NAME" 2>/dev/null || true
 
@@ -100,17 +78,13 @@ if [ -d "$SPARKLE" ]; then
             codesign "${SIGN_OPTS[@]}" "$target"
         fi
     done
-fi
 
-# Info.plist may have changed above, even if no Sparkle framework was embedded.
-# Sign again so both configurations have valid final signatures.
-SIGN_OPTS=(--force --options runtime --timestamp --keychain "$QUIRKY_SIGN_KEYCHAIN" --sign "$QUIRKY_SIGN_IDENTITY")
-ENTITLEMENTS="$ROOT/Quirky/Quirky.entitlements"
-if [ "$BUILD_CONFIG" = "MAS Release" ]; then
-    ENTITLEMENTS="$ROOT/Quirky/Quirky-MAS.entitlements"
+    # Re-sign the main executable + the .app bundle on top of the freshly
+    # signed framework so the embedded code-directory hashes match.
+    ENTITLEMENTS="$ROOT/Quirky/Quirky.entitlements"
+    codesign "${SIGN_OPTS[@]}" "$APP/Contents/MacOS/Quirky"
+    codesign "${SIGN_OPTS[@]}" --entitlements "$ENTITLEMENTS" "$APP"
 fi
-codesign "${SIGN_OPTS[@]}" "$APP/Contents/MacOS/Quirky"
-codesign "${SIGN_OPTS[@]}" --entitlements "$ENTITLEMENTS" "$APP"
 
 echo "==> codesign verify"
 codesign --verify --deep --strict --verbose=2 "$APP"

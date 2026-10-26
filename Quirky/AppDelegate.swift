@@ -450,15 +450,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // should land when they finish measuring, not the app they started from.
         let front = NSWorkspace.shared.frontmostApplication
         if front?.bundleIdentifier != Bundle.main.bundleIdentifier { previousApp = front }
-        #if !MAS_BUILD
-        // Last used DOM/SVG but not in a browser now: open in OCR instead.
-        if currentMode == .dom || currentMode == .svg,
-           BrowserAutomation.detectBrowser(bundleID: previousApp?.bundleIdentifier) == nil,
-           EnabledModesStore.load().contains(.ocr) {
-            currentMode = .ocr
-            OCREngine.warmUp()
-        }
-        #endif
 
         overlay.refreshBackground(capture: { [weak self] in
             guard let self else { return [] }
@@ -544,24 +535,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.handleDOMElementPicked(label)
             }
             let session = captureSession
-            DOMExtractor.getDOMElements(from: previousApp) { [weak self] result in
+            DOMExtractor.getDOMElements(from: previousApp) { [weak self] elements in
                 guard let self, self.isCurrent(session, in: .dom) else { return }
-                switch result {
-                case .failure(let error): self.skipBrowserMode(.dom, error: error)
-                case .success(let elements) where elements.isEmpty:
-                    self.skipBrowserMode(.dom, message: "На странице не найдено DOM-элементов")
-                case .success(let elements): self.overlay.setDOMElements(elements)
+                if elements.isEmpty {
+                    ToastWindow.show("Open in Safari/Chrome", style: .error)
+                    if let next = self.nextEnabledMode(after: .dom, step: self.cycleDirection) {
+                        self.switchActiveCaptureMode(to: next)
+                    } else {
+                        self.cancelCapture()
+                        self.overlay.dismiss()
+                    }
+                    return
                 }
+                self.overlay.setDOMElements(elements)
             }
         case .svg:
             overlay.switchToSVGMode()
             let session = captureSession
-            SVGExtractor.getSVGBoundingBoxes(from: previousApp) { [weak self] result in
+            SVGExtractor.getSVGBoundingBoxes(from: previousApp) { [weak self] boxes in
                 guard let self, self.isCurrent(session, in: .svg) else { return }
-                switch result {
-                case .success(let boxes): self.overlay.setSVGBoxes(boxes)
-                case .failure(let error): self.skipBrowserMode(.svg, error: error)
-                }
+                self.overlay.setSVGBoxes(boxes)
             }
         #endif
         case .spx:
@@ -592,15 +585,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // keep whatever app was in front before so focus returns there.
         let front = NSWorkspace.shared.frontmostApplication
         if front?.bundleIdentifier != Bundle.main.bundleIdentifier { previousApp = front }
-        #if !MAS_BUILD
-        // Last used DOM/SVG but not in a browser now: open in OCR instead.
-        if currentMode == .dom || currentMode == .svg,
-           BrowserAutomation.detectBrowser(bundleID: previousApp?.bundleIdentifier) == nil,
-           EnabledModesStore.load().contains(.ocr) {
-            currentMode = .ocr
-            OCREngine.warmUp()
-        }
-        #endif
         syncStateHotkeys()
         showModePopover()
 
@@ -714,46 +698,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: SVG
 
     #if !MAS_BUILD
-    /// DOM/SVG can't run here: outside a browser move on silently to the next
-    /// mode (usually OCR); in a browser that refused, say why and move on too.
-    private func skipBrowserMode(_ mode: CaptureMode, error: BrowserAutomationFailure) {
-        skipBrowserMode(mode, message: error.kind == .unsupportedBrowser ? nil : error.userMessage,
-                        skipBrowserModes: error.kind == .unsupportedBrowser)
-    }
-
-    private func skipBrowserMode(_ mode: CaptureMode, message: String?, skipBrowserModes: Bool = false) {
-        if let message { ToastWindow.show(message, style: .error) }
-        var next = nextEnabledMode(after: mode, step: cycleDirection)
-        // Not a browser: SVG would fail the same way, go straight past it.
-        var hops = 0
-        while skipBrowserModes, let n = next, n == .dom || n == .svg, hops < CaptureMode.allCases.count {
-            next = nextEnabledMode(after: n, step: cycleDirection); hops += 1
-        }
-        if skipBrowserModes, next == .dom || next == .svg { next = nil }
-        if let next {
-            switchActiveCaptureMode(to: next)
-        } else {
-            cancelCapture()
-            overlay.dismiss()
-        }
-    }
-
     private func performSVGExtraction(on rect: CGRect) {
         let browserApp = previousApp
-        let session = captureSession
         // Release Tab/Esc and the watchdog now: AppleScript can take seconds,
         // and the overlay is already gone.
         finishCapture()
-        SVGExtractor.extractSVGs(in: rect, from: browserApp) { [weak self] result in
-            guard let self, self.captureSession == session, self.currentMode == .svg, !self.isCapturing else { return }
-            switch result {
-            case .failure(let error): ToastWindow.show(error.userMessage(forBrowserBundleID: browserApp?.bundleIdentifier), style: .error)
-            case .success(let svgs):
-                if svgs.isEmpty { ToastWindow.show("No SVGs found") }
-                else {
-                    SVGExtractor.copyToClipboard(svgs)
-                    ToastWindow.show(svgs.count == 1 ? "1 SVG copied" : "\(svgs.count) SVGs copied")
-                }
+        SVGExtractor.extractSVGs(in: rect, from: browserApp) { svgs in
+            if svgs.isEmpty { ToastWindow.show("No SVGs found") }
+            else {
+                SVGExtractor.copyToClipboard(svgs)
+                ToastWindow.show(svgs.count == 1 ? "1 SVG copied" : "\(svgs.count) SVGs copied")
             }
         }
     }
