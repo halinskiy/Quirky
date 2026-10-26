@@ -1,6 +1,6 @@
 # Quirky — инструкции для агентов
 
-macOS menu-bar утилита захвата: OCR, HEX, DOM, SVG, SPX за одним хоткеем ⌘⇧1.
+macOS menu-bar утилита захвата: OCR, HEX, DOM, SPX за одним хоткеем ⌘⇧1.
 Bundle id `com.threempq.quirky`, Developer ID, нотаризация, Sparkle.
 
 - Читать перед работой: [docs/00-overview.md](docs/00-overview.md), [docs/09-gotchas.md](docs/09-gotchas.md).

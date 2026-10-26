@@ -6,7 +6,7 @@
 | `OverlayWindow.swift` | `OverlayWindow` (окна на каждый экран, уровень `CGShieldingWindowLevel()`) и `SelectionView` (ввод и HUD всех режимов) |
 | `ModePopover.swift` | своя NSPanel с чипами режимов под иконкой, уровень оверлея +1 |
 | `SPXAnalyzer.swift` | градиентная и run-карты скриншота для лучей SPX |
-| `DOMExtractor.swift`, `SVGExtractor.swift` | JS в браузер через Apple Events, под `#if !MAS_BUILD` |
+| `DOMExtractor.swift` | JS в браузер через Apple Events, под `#if !MAS_BUILD` |
 | `OCREngine.swift` | финальное распознавание выделения: `.accurate`, при ошибке `.fast`; `keepWarm()` держит модель Vision загруженной |
 | `HotkeyManager.swift` | Carbon-хоткеи (⇧Tab регистрируется отдельно от Tab) |
 

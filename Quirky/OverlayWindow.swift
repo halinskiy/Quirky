@@ -26,7 +26,6 @@ final class SelectionView: NSView {
     /// hearing input while the user is clearly still moving the mouse is a
     /// dead overlay covering their screen.
     var onActivity: (() -> Void)?
-    var isSVGMode = false
     var isHEXMode = false
     var isDOMMode = false
     var isSPXMode = false
@@ -155,13 +154,12 @@ final class SelectionView: NSView {
     }
 
     var screenWordBoxes: [CGRect] = []
-    var screenSVGBoxes: [CGRect] = []
     var screenDOMElements: [DOMElementBox] = []
 
     override var acceptsFirstResponder: Bool { true }
 
     private var activeBoxes: [CGRect] {
-        isSVGMode ? screenSVGBoxes : screenWordBoxes
+        screenWordBoxes
     }
 
     // MARK: SPX handle hit-test
@@ -442,7 +440,7 @@ final class SelectionView: NSView {
         }
     }
 
-    /// Only the OCR/SVG hover box, the boxes inside a selection and the DOM
+    /// Only the OCR hover box, the boxes inside a selection and the DOM
     /// highlight are dashed. Ticking a full redraw when none is on screen was
     /// pure waste, 20 times a second for the whole session.
     private var hasMarchingAnts: Bool {
@@ -726,21 +724,19 @@ final class SelectionView: NSView {
         if inflated.height < 10 { inflated = inflated.insetBy(dx: 0, dy: -10) }
         if inflated.width < 10 { inflated = inflated.insetBy(dx: -10, dy: 0) }
         var finalRect = inflated
-        if !isSVGMode {
-            // Match the live-drag highlight rule: include only words whose
-            // CENTER lies inside the selection rect, then tighten finalRect
-            // to the union of those words. The previous `intersects()` test
-            // grew finalRect into adjacent lines on any pixel-level overlap,
-            // causing the OCR result to include text the user didn't select.
-            var contained: [CGRect] = []
-            for box in screenWordBoxes {
-                if inflated.contains(NSPoint(x: box.midX, y: box.midY)) {
-                    contained.append(box)
-                }
+        // Match the live-drag highlight rule: include only words whose
+        // CENTER lies inside the selection rect, then tighten finalRect
+        // to the union of those words. The previous `intersects()` test
+        // grew finalRect into adjacent lines on any pixel-level overlap,
+        // causing the OCR result to include text the user didn't select.
+        var contained: [CGRect] = []
+        for box in screenWordBoxes {
+            if inflated.contains(NSPoint(x: box.midX, y: box.midY)) {
+                contained.append(box)
             }
-            if !contained.isEmpty {
-                finalRect = contained.reduce(contained[0]) { $0.union($1) }
-            }
+        }
+        if !contained.isEmpty {
+            finalRect = contained.reduce(contained[0]) { $0.union($1) }
         }
         guard finalRect.width > 2, finalRect.height > 2 else {
             captureLog.notice("selection too small, cancelling")
@@ -1046,7 +1042,6 @@ final class SelectionView: NSView {
     /// Switches the view into SPX mode and constructs the analyzer from the current backgroundImage.
     func enableSPXMode() {
         isSPXMode = true
-        isSVGMode = false
         isHEXMode = false
         isDOMMode = false
         if let img = backgroundImage {
@@ -1945,7 +1940,7 @@ private final class KeyWindow: NSWindow {
 
 final class OverlayWindow {
     private var windows: [NSWindow] = []
-    /// Rect selections (OCR / SVG) land here. This is a property set once by
+    /// Rect selections (OCR) land here. This is a property set once by
     /// AppDelegate, not a per-show parameter, because the mode a session
     /// STARTS in is not the mode it ENDS in: HEX / DOM / SPX used to install a
     /// no-op completion at show time, so switching to OCR mid-session left
@@ -1966,7 +1961,7 @@ final class OverlayWindow {
     /// Puts up the frozen-screen overlay. The mode is applied separately by
     /// the switchTo*Mode methods, the same ones used for mid-session switches.
     func show(screenImages: [(displayID: CGDirectDisplayID, image: CGImage)], onCancel: @escaping () -> Void) {
-        showOverlay(isSVG: false, screenImages: screenImages, onCancel: onCancel)
+        showOverlay(screenImages: screenImages, onCancel: onCancel)
     }
 
     // MARK: Mode switching (mid-capture)
@@ -1975,21 +1970,6 @@ final class OverlayWindow {
         forceInteractive()
         for window in windows {
             guard let view = window.contentView as? SelectionView else { continue }
-            view.isSVGMode = false
-            view.isHEXMode = false
-            view.isDOMMode = false
-            view.disableSPXMode()
-            view.onColorPicked = nil
-            view.onDOMElementPicked = nil
-            view.needsDisplay = true
-        }
-    }
-
-    func switchToSVGMode() {
-        forceInteractive()
-        for window in windows {
-            guard let view = window.contentView as? SelectionView else { continue }
-            view.isSVGMode = true
             view.isHEXMode = false
             view.isDOMMode = false
             view.disableSPXMode()
@@ -2004,7 +1984,6 @@ final class OverlayWindow {
         let handler = wrappedColorPicked(onColorPicked)
         for window in windows {
             guard let view = window.contentView as? SelectionView else { continue }
-            view.isSVGMode = false
             view.isHEXMode = true
             view.isDOMMode = false
             view.disableSPXMode()
@@ -2019,7 +1998,6 @@ final class OverlayWindow {
         let handler = wrappedDOMElementPicked(onElementPicked)
         for window in windows {
             guard let view = window.contentView as? SelectionView else { continue }
-            view.isSVGMode = false
             view.isHEXMode = false
             view.isDOMMode = true
             view.disableSPXMode()
@@ -2033,7 +2011,6 @@ final class OverlayWindow {
         forceInteractive()
         for window in windows {
             guard let view = window.contentView as? SelectionView else { continue }
-            view.isSVGMode = false
             view.isHEXMode = false
             view.isDOMMode = false
             view.onColorPicked = nil
@@ -2180,22 +2157,6 @@ final class OverlayWindow {
         }
     }
 
-    func setSVGBoxes(_ cgBoxes: [CGRect]) {
-        let mainH = CGDisplayBounds(CGMainDisplayID()).height
-        for window in windows {
-            guard let view = window.contentView as? SelectionView else { continue }
-            let screen = window.screen ?? NSScreen.main!
-            view.screenSVGBoxes = cgBoxes.map { cg in
-                CGRect(
-                    x: cg.origin.x - screen.frame.origin.x,
-                    y: mainH - cg.origin.y - cg.height - screen.frame.origin.y,
-                    width: cg.width, height: cg.height
-                ).insetBy(dx: -6, dy: -4)
-            }
-            view.needsDisplay = true
-        }
-    }
-
     #if !MAS_BUILD
     func setDOMElements(_ elements: [DOMExtractor.Element]) {
         let mainH = CGDisplayBounds(CGMainDisplayID()).height
@@ -2225,7 +2186,7 @@ final class OverlayWindow {
 
     // MARK: Private
 
-    private func showOverlay(isSVG: Bool, screenImages: [(displayID: CGDirectDisplayID, image: CGImage)], onCancel: @escaping () -> Void) {
+    private func showOverlay(screenImages: [(displayID: CGDirectDisplayID, image: CGImage)], onCancel: @escaping () -> Void) {
         NSCursor.crosshair.set()
         isGhost = false
         // Never stack overlays. If a previous session left windows on screen
@@ -2250,7 +2211,6 @@ final class OverlayWindow {
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             window.isReleasedWhenClosed = false
             let view = SelectionView(frame: screen.frame)
-            view.isSVGMode = isSVG
             if let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID {
                 view.backgroundImage = imageByDisplay[displayID]
             }

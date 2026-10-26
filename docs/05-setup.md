@@ -13,7 +13,7 @@
   menu-bar приложение. Для замеров собирать стенд из `OverlayWindow.swift` + `SPXAnalyzer.swift`
   + `DOMExtractor.swift` и своего `main.swift`.
 
-## Диагностика DOM/SVG (direct-сборки)
+## Диагностика DOM (direct-сборки)
 
 `Scripts/build.sh` читает `APPS_TELEMETRY_INGEST_KEY` только из окружения и добавляет конфигурацию
 в собранный `.app` перед финальной подписью. Ключ и dashboard token в исходники не записывать.
@@ -25,10 +25,10 @@ export APPS_TELEMETRY_INGEST_KEY
 Scripts/build.sh
 ```
 
-Отправляются только исходы операций DOM/SVG: bundle id браузера, код AppleScript, длительность,
-количество результатов и служебные идентификаторы. Содержимое страницы, селекторы, SVG, URL,
+Отправляются только исходы операций DOM: bundle id браузера, код AppleScript, длительность,
+количество результатов и служебные идентификаторы. Содержимое страницы, селекторы, URL,
 названия окон и буфер не отправляются. Доставка best effort, без дисковой очереди и повторов.
-В `MAS Release` код DOM/SVG и диагностики исключён, а ключ и endpoint в `.app` не добавляются.
+В `MAS Release` код DOM и диагностики исключён, а ключ и endpoint в `.app` не добавляются.
 Nothing и другие Chromium требуют вручную включить `View > Developer > Allow JavaScript from Apple Events`;
 Quirky настройки браузера не меняет.
 

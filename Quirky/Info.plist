@@ -27,9 +27,9 @@
     <key>LSUIElement</key>
     <true/>
     <key>NSScreenCaptureUsageDescription</key>
-    <string>Quirky needs Screen Recording permission to capture screen regions for text, color, element, SVG, and pixel-measurement extraction.</string>
+    <string>Quirky needs Screen Recording permission to capture screen regions for text, color, element, and pixel-measurement extraction.</string>
     <key>NSAppleEventsUsageDescription</key>
-    <string>Quirky needs Automation permission to extract SVG icons and DOM elements from your browser.</string>
+    <string>Quirky needs Automation permission to extract DOM elements from your browser.</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>SUFeedURL</key>

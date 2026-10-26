@@ -14,7 +14,6 @@
 		AA0000000000000000000008 /* PermissionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000008 /* PermissionManager.swift */; };
 		AA0000000000000000000009 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000009 /* Assets.xcassets */; };
 		AA0000000000000000000011 /* ToastWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000011 /* ToastWindow.swift */; };
-		AA0000000000000000000012 /* SVGExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000012 /* SVGExtractor.swift */; };
 		AA0000000000000000000014 /* DOMExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000014 /* DOMExtractor.swift */; };
 		AA0000000000000000000015 /* SPXAnalyzer.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000015 /* SPXAnalyzer.swift */; };
 		AA0000000000000000000016 /* ModePopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000016 /* ModePopover.swift */; };
@@ -32,7 +31,6 @@
 		BB000000000000000000000A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		BB000000000000000000000B /* Quirky.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Quirky.entitlements; sourceTree = "<group>"; };
 		BB0000000000000000000011 /* ToastWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToastWindow.swift; sourceTree = "<group>"; };
-		BB0000000000000000000012 /* SVGExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SVGExtractor.swift; sourceTree = "<group>"; };
 		BB0000000000000000000014 /* DOMExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DOMExtractor.swift; sourceTree = "<group>"; };
 		BB0000000000000000000015 /* SPXAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SPXAnalyzer.swift; sourceTree = "<group>"; };
 		BB0000000000000000000016 /* ModePopover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModePopover.swift; sourceTree = "<group>"; };
@@ -71,7 +69,6 @@
 				BB0000000000000000000005 /* OCREngine.swift */,
 				BB0000000000000000000008 /* PermissionManager.swift */,
 				BB0000000000000000000011 /* ToastWindow.swift */,
-				BB0000000000000000000012 /* SVGExtractor.swift */,
 				BB0000000000000000000014 /* DOMExtractor.swift */,
 				BB0000000000000000000015 /* SPXAnalyzer.swift */,
 				BB0000000000000000000016 /* ModePopover.swift */,
@@ -191,7 +188,6 @@
 				AA0000000000000000000005 /* OCREngine.swift in Sources */,
 				AA0000000000000000000008 /* PermissionManager.swift in Sources */,
 				AA0000000000000000000011 /* ToastWindow.swift in Sources */,
-				AA0000000000000000000012 /* SVGExtractor.swift in Sources */,
 				AA0000000000000000000014 /* DOMExtractor.swift in Sources */,
 				AA0000000000000000000015 /* SPXAnalyzer.swift in Sources */,
 				AA0000000000000000000016 /* ModePopover.swift in Sources */,

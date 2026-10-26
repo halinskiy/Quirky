@@ -15,7 +15,7 @@ App Store Connect: «Quirky Screen Capture», app id 6773094144. Бесплат�
 Политика и поддержка: halinskiy.github.io/apps/quirky-privacy.html и quirky-support.html (репо `halinskiy/apps`).
 
 Конфигурация `MAS Release`: `MAS_BUILD`, `Info-MAS.plist`, `Quirky-MAS.entitlements`, профиль «Quirky MAS Distribution».
-DOM и SVG выключены (песочница запрещает Apple Events). Sparkle вырезается фазой «Strip Sparkle in MAS build»,
+DOM выключен (песочница запрещает Apple Events). Sparkle вырезается фазой «Strip Sparkle in MAS build»,
 а `-Wl,-dead_strip_dylibs` убирает ссылку на него из бинарника. Без этого флага бинарник ссылался на удалённый
 Sparkle.framework и магазинная версия падала бы при запуске (проверка: `otool -L ... | grep -i sparkle` должно быть пусто).
 

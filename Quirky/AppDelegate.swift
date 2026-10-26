@@ -9,12 +9,11 @@ enum CaptureMode: String, CaseIterable {
     case ocr
     case hex
     #if !MAS_BUILD
-    // DOM and SVG modes drive Safari/Chrome via Apple Events, which the
+    // DOM mode drives Safari/Chrome via Apple Events, which the
     // Mac App Store sandbox doesn't grant without temporary-exception
-    // entitlements that Apple frequently denies. They ship only in the
+    // entitlements that Apple frequently denies. It ships only in the
     // direct-distribution build.
     case dom
-    case svg
     #endif
     case spx
     var displayName: String { rawValue.uppercased() }
@@ -25,7 +24,7 @@ enum CaptureMode: String, CaseIterable {
 private enum EnabledModesStore {
     private static let key = "enabledModes"
     /// Source of truth for cycle order; tracks CaptureMode declaration
-    /// (so MAS builds without .dom/.svg get the right order automatically).
+    /// (so MAS builds without .dom get the right order automatically).
     private static let canonicalOrder: [CaptureMode] = CaptureMode.allCases
 
     static func load() -> [CaptureMode] {
@@ -549,13 +548,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 self.overlay.setDOMElements(elements)
             }
-        case .svg:
-            overlay.switchToSVGMode()
-            let session = captureSession
-            SVGExtractor.getSVGBoundingBoxes(from: previousApp) { [weak self] boxes in
-                guard let self, self.isCurrent(session, in: .svg) else { return }
-                self.overlay.setSVGBoxes(boxes)
-            }
         #endif
         case .spx:
             overlay.switchToSPXMode()
@@ -600,7 +592,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Single exit for every session end: releases the screenshots (~25 MB a
     /// Retina screen), the session hotkeys and the watchdog, and hands focus
-    /// back right away. Results that arrive later (OCR, SVG) only touch the
+    /// back right away. Results that arrive later (OCR) only touch the
     /// clipboard, so they can't steal focus from whatever the user did next.
     private func finishCapture() {
         isCapturing = false
@@ -630,7 +622,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     #endif
 
-    /// Only OCR and SVG finish on a dragged rect. HEX / DOM / SPX pick on
+    /// Only OCR finishes on a dragged rect. HEX / DOM / SPX pick on
     /// mouse-up without ever completing a selection, so they land here only if
     /// something desyncs — ignoring them is the safe read.
     private func handleCaptureComplete(_ cgRect: CGRect) {
@@ -638,7 +630,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch currentMode {
         case .ocr: performPreCapturedOCR(on: cgRect)
         #if !MAS_BUILD
-        case .svg: performSVGExtraction(on: cgRect)
         case .dom: break
         #endif
         case .hex, .spx: break
@@ -694,24 +685,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             else { self?.copyResult(trimmed, toast: "Copied") }
         }
     }
-
-    // MARK: SVG
-
-    #if !MAS_BUILD
-    private func performSVGExtraction(on rect: CGRect) {
-        let browserApp = previousApp
-        // Release Tab/Esc and the watchdog now: AppleScript can take seconds,
-        // and the overlay is already gone.
-        finishCapture()
-        SVGExtractor.extractSVGs(in: rect, from: browserApp) { svgs in
-            if svgs.isEmpty { ToastWindow.show("No SVGs found") }
-            else {
-                SVGExtractor.copyToClipboard(svgs)
-                ToastWindow.show(svgs.count == 1 ? "1 SVG copied" : "\(svgs.count) SVGs copied")
-            }
-        }
-    }
-    #endif
 
     // MARK: Focus
 

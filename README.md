@@ -5,7 +5,7 @@
 <h1 align="center">Quirky</h1>
 
 <p align="center">
-  A lightweight macOS menu bar capture suite — five precise tools behind one global hotkey.<br>
+  A lightweight macOS menu bar capture suite — four precise tools behind one global hotkey.<br>
   Press <kbd>⌘⇧1</kbd> to capture; switch tools on the fly from the menu-bar picker.<br>
   Results land in your clipboard instantly.
 </p>
@@ -19,8 +19,6 @@
 **HEX** — eyedropper. Hover any pixel; the exact hex color follows your cursor. Click to copy.
 
 **DOM** — element inspector for any open page in Safari/Chrome/Arc/Brave/Edge/Comet/Vivaldi/Opera. Click an element to copy its label, role, or tag.
-
-**SVG** — extracts real SVG source from the same browsers. Click an icon or drag over several; clean vector markup lands in your clipboard, ready to paste into Figma. No browser extensions.
 
 **SPX** — PixelSnap-style pixel measurement. Magnetic edge detection, free-drag rect → snap-on-release, ruler crosshair, resizable handles on every side, hover-reveal close button, ghost mode (⌘⇧1 toggle) lets you keep markings translucent over the live screen.
 
@@ -36,13 +34,13 @@ Enable the modes you use in the settings menu (right-click the menu-bar icon). P
 2. Open the disk image and drag **Quirky.app** into **Applications**
 3. Launch and grant the required permissions:
    - **Screen Recording** — for capture across every mode
-   - **Automation** — for SVG and DOM extraction from browsers (prompted on first use)
+   - **Automation** — for DOM extraction from browsers (prompted on first use)
 
 The global hotkey uses Carbon hotkey registration and needs no Accessibility permission.
 
 ### Mac App Store edition
 
-A sandboxed edition (OCR, HEX and SPX; no DOM/SVG, which need Apple Events, and no Sparkle) is built from the `MAS Release` configuration and published as **Quirky Screen Capture**. It is free. See [`docs/04-release.md`](docs/04-release.md).
+A sandboxed edition (OCR, HEX and SPX; no DOM, which needs Apple Events, and no Sparkle) is built from the `MAS Release` configuration and published as **Quirky Screen Capture**. It is free. See [`docs/04-release.md`](docs/04-release.md).
 
 ## Troubleshooting
 

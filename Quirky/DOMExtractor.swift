@@ -6,7 +6,7 @@
 import Cocoa
 import ApplicationServices
 
-/// NSAppleScript is not thread-safe. Every browser script (DOM and SVG) runs
+/// NSAppleScript is not thread-safe. Every browser script runs
 /// on this one serial queue so a quick selection can't race a box scan.
 let appleScriptQueue = DispatchQueue(label: "com.threempq.quirky.applescript", qos: .userInitiated)
 
@@ -131,7 +131,7 @@ final class DOMExtractor {
         return CGRect(origin: pos, size: size)
     }
 
-    // MARK: - Browser detection (mirrors SVGExtractor — independent on purpose)
+    // MARK: - Browser detection
 
     private enum Browser {
         case safari
