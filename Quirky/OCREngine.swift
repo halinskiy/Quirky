@@ -61,10 +61,56 @@ final class OCREngine {
 
     static func recognizeText(in image: CGImage, completion: @escaping (String) -> Void) {
         queue.async {
-            // The fast recognizer is the very last resort: Latin only.
-            let text = recognizeAccurate(image) ?? run(image, level: .fast, device: nil)
+            // Vision can break for good inside a long-running Quirky: e5rtError
+            // on every device, for days, until relaunch. A fresh process reads
+            // fine, so hand the image to one. The fast recognizer is the very
+            // last resort: Latin only ("Українці" came back as "YKpaiHLIi").
+            var text = recognizeAccurate(image)
+            if text == nil {
+                deviceIndex = 0
+                text = recognizeInFreshProcess(image)
+            }
+            if text == nil { text = run(image, level: .fast, device: nil) }
             DispatchQueue.main.async { completion(text ?? "") }
         }
+    }
+
+    private static func recognizeInFreshProcess(_ image: CGImage) -> String? {
+        guard let exe = Bundle.main.executablePath else { return nil }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("quirky-ocr-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: url) }
+        guard let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]),
+              (try? png.write(to: url)) != nil else { return nil }
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: exe)
+        task.arguments = ["--ocr", url.path]
+        let out = Pipe()
+        task.standardOutput = out
+        task.standardError = FileHandle.nullDevice
+        let start = Date()
+        do { try task.run() } catch { return nil }
+        let killer = DispatchWorkItem { if task.isRunning { task.terminate() } }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 30, execute: killer)
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
+        killer.cancel()
+        let ms = Int(Date().timeIntervalSince(start) * 1000)
+        captureLog.notice("OCR fresh process exit=\(task.terminationStatus, privacy: .public) in \(ms, privacy: .public) ms")
+        guard task.terminationStatus == 0 else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// Entry for `Quirky --ocr <png>`: prints the text, exit 1 on failure.
+    static func runOneShot(path: String) -> Int32 {
+        guard let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(src, 0, nil),
+              let text = { () -> String? in
+                  // The parent only gets here after the Neural Engine failed; skip it.
+                  deviceIndex = Int(ProcessInfo.processInfo.environment["QUIRKY_OCR_DEVICE"] ?? "") ?? 2
+                  return recognizeAccurate(image)
+              }() else { return 1 }
+        FileHandle.standardOutput.write(Data(text.utf8))
+        return 0
     }
 
     /// Accurate recognition on the current device, stepping down on failure.
