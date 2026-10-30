@@ -88,8 +88,10 @@ final class OCREngine {
         task.standardError = FileHandle.nullDevice
         let start = Date()
         do { try task.run() } catch { return nil }
+        // Generous: a first compile of the model has taken ~50 s, and killing
+        // the client aborts it, so the next try starts the compile over.
         let killer = DispatchWorkItem { if task.isRunning { task.terminate() } }
-        DispatchQueue.global().asyncAfter(deadline: .now() + 30, execute: killer)
+        DispatchQueue.global().asyncAfter(deadline: .now() + 150, execute: killer)
         let data = out.fileHandleForReading.readDataToEndOfFile()
         task.waitUntilExit()
         killer.cancel()

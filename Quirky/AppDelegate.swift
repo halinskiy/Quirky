@@ -679,17 +679,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Recognition can take a moment; say so instead of looking dead.
         ToastWindow.show("Recognizing…")
         // A slow OCR is macOS recompiling its text model (it drops it when the
-        // disk is nearly full). Say that, so a 30 s wait doesn't look like a
-        // dead Quirky; repeat because toasts fade.
+        // disk is nearly full). Say that once and keep it up until the result
+        // toast replaces it, so a 30 s wait doesn't look like a dead Quirky.
         var done = false
-        var slowTimer: Timer?
-        slowTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { _ in
-            guard !done else { slowTimer?.invalidate(); return }
-            ToastWindow.show(Self.slowOCRReason(), style: .error)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            if !done { ToastWindow.show(Self.slowOCRReason(), style: .error, dwell: 120) }
         }
         OCREngine.recognizeText(in: cropped) { [weak self] text in
             done = true
-            slowTimer?.invalidate()
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             captureLog.notice("OCR done, \(trimmed.count, privacy: .public) chars")
             if trimmed.isEmpty { ToastWindow.show("No text found") }

@@ -32,7 +32,9 @@ final class ToastWindow: NSWindow {
     private static let toastTextColor: CGColor =
         NSColor(deviceRed: 1, green: 1, blue: 1, alpha: 1).cgColor
 
-    static func show(_ message: String, style: ToastStyle = .normal) {
+    /// `dwell` overrides the style's time on screen (a long wait stays up
+    /// until the next toast replaces it instead of blinking on a timer).
+    static func show(_ message: String, style: ToastStyle = .normal, dwell: TimeInterval? = nil) {
         current?.orderOut(nil)
 
         let line = makeLine(message)
@@ -78,7 +80,7 @@ final class ToastWindow: NSWindow {
             toast.animator().alphaValue = 1
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + style.dwellSeconds) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + (dwell ?? style.dwellSeconds)) {
             NSAnimationContext.runAnimationGroup({ ctx in
                 ctx.duration = 0.3
                 toast.animator().alphaValue = 0
