@@ -36,7 +36,7 @@ final class OCREngine {
         guard let image = warmUpImage else { return }
         queue.async {
             let start = Date()
-            _ = recognizeAccurate(image)
+            _ = recognizeInFreshProcess(image)
             let ms = Int(Date().timeIntervalSince(start) * 1000)
             if ms > 500 { captureLog.notice("OCR warm-up took \(ms, privacy: .public) ms") }
         }
@@ -61,15 +61,14 @@ final class OCREngine {
 
     static func recognizeText(in image: CGImage, completion: @escaping (String) -> Void) {
         queue.async {
-            // Vision can break for good inside a long-running Quirky: e5rtError
-            // on every device, for days, until relaunch. A fresh process reads
-            // fine, so hand the image to one. The fast recognizer is the very
+            // Vision breaks inside a long-running Quirky within minutes
+            // (e5rtError on every device: the compiled model it cached gets
+            // purged from disk under it), while a fresh process reads the same
+            // image in ~0.2 s. So every recognition runs in a fresh process;
+            // in-process is only the backup. The fast recognizer is the very
             // last resort: Latin only ("Українці" came back as "YKpaiHLIi").
-            var text = recognizeAccurate(image)
-            if text == nil {
-                deviceIndex = 0
-                text = recognizeInFreshProcess(image)
-            }
+            var text = recognizeInFreshProcess(image)
+            if text == nil { text = recognizeAccurate(image) }
             if text == nil { text = run(image, level: .fast, device: nil) }
             DispatchQueue.main.async { completion(text ?? "") }
         }
@@ -105,8 +104,7 @@ final class OCREngine {
         guard let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
               let image = CGImageSourceCreateImageAtIndex(src, 0, nil),
               let text = { () -> String? in
-                  // The parent only gets here after the Neural Engine failed; skip it.
-                  deviceIndex = Int(ProcessInfo.processInfo.environment["QUIRKY_OCR_DEVICE"] ?? "") ?? 2
+                  deviceIndex = Int(ProcessInfo.processInfo.environment["QUIRKY_OCR_DEVICE"] ?? "") ?? 0
                   return recognizeAccurate(image)
               }() else { return 1 }
         FileHandle.standardOutput.write(Data(text.utf8))
